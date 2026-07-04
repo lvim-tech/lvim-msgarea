@@ -1,0 +1,86 @@
+*lvim-msgarea.txt*                    The persistent message area of the lvim-tech set
+
+==============================================================================
+CONTENTS                                                  *lvim-msgarea-contents*
+
+    1. Introduction ......................... |lvim-msgarea-introduction|
+    2. Requirements ......................... |lvim-msgarea-requirements|
+    3. Installation ......................... |lvim-msgarea-installation|
+    4. Usage ................................ |lvim-msgarea-usage|
+    5. Configuration ........................ |lvim-msgarea-configuration|
+
+==============================================================================
+1. INTRODUCTION                                       *lvim-msgarea-introduction*
+
+lvim-msgarea is a persistent, toggleable MESSAGE AREA docked under (or over) the
+editor — an Emacs-minibuffer-style zone where messages STAY readable instead of
+vanishing after a timeout or on the next cursor move.
+
+It is NOT a second vim.ui_attach and does not patch Neovim internals. The notify
+hub (lvim-hud) is the single ext_messages owner; it captures / de-dups / levels
+every message and routes it by kind. lvim-msgarea registers a SINK with that hub
+and renders whatever is routed to it into a window it owns. On top of that it
+hosts the unified minibuffer (the cmdline drawn inside the zone), the :Messages
+history (browsed in the zone with a filter bar), and opt-in completion docks
+(blink.cmp / native cmdline completion).
+
+==============================================================================
+2. REQUIREMENTS                                       *lvim-msgarea-requirements*
+
+- Neovim >= 0.12.x
+- lvim-utils (base)
+- lvim-ui (the float toolkit + the zone seams: set_host_provider / set_zone_hooks
+  / zone_handoff)
+- lvim-hud (the notify hub + the command-line)
+- lvim-picker (the in-zone navigator)
+- optional: blink.cmp (the blink completion dock)
+
+==============================================================================
+3. INSTALLATION                                       *lvim-msgarea-installation*
+
+lvim-installer (recommended): >vim
+    :LvimInstaller plugins
+<
+Native (vim.pack): >lua
+    vim.pack.add({
+        { src = "https://github.com/lvim-tech/lvim-utils" },
+        { src = "https://github.com/lvim-tech/lvim-ui" },
+        { src = "https://github.com/lvim-tech/lvim-hud" },
+        { src = "https://github.com/lvim-tech/lvim-picker" },
+        { src = "https://github.com/lvim-tech/lvim-msgarea" },
+    })
+    require("lvim-msgarea").setup({ enable = true })
+<
+==============================================================================
+4. USAGE                                                     *lvim-msgarea-usage*
+
+setup() registers `:LvimMsgArea` (toggle the zone) and, when `enable = true`,
+turns it on. The zone opens automatically when a message is routed to it and
+hides when it empties. >vim
+    :LvimMsgArea
+<
+Lua API: >lua
+    local ma = require("lvim-msgarea")
+    ma.toggle()          -- show / hide the zone (the model is kept)
+    ma.enable()          -- turn the zone on (register the sink + route kinds)
+    ma.disable()         -- turn the zone off
+    ma.focus_messages()  -- focus the zone to browse the message history
+    ma.clear()           -- wipe the scrollback
+<
+The unified minibuffer (`unified = true`) needs lvim-hud.cmdline enabled; the
+completion docks (`integrations.blink` / `integrations.native`) route the
+respective completion menu into the zone.
+
+==============================================================================
+5. CONFIGURATION                                     *lvim-msgarea-configuration*
+
+                                                          *lvim-msgarea.setup()*
+require("lvim-msgarea").setup({opts})
+
+Merges {opts} into the live config in place (a shorter override list REPLACES the
+default wholesale) and registers `:LvimMsgArea`. See the README for the FULL
+default config; the option set is documented as `LvimMsgAreaConfig` in
+`lua/lvim-msgarea/config.lua` (enable, max_height, auto_resize, unified,
+scrollback, completion_*, kinds, integrations, keys, …).
+
+vim:tw=78:ts=8:ft=help:norl:
