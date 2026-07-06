@@ -22,6 +22,10 @@ local items = {}
 local sel = 0
 ---@type integer  bumped each refresh; the async fuzzy callback applies only if it is still the latest
 local gen = 0
+---@type boolean  true while a coalesced refresh is already queued for this tick — so a burst of
+--- CmdlineChanged (a pasted word, held key) schedules ONE getcompletion pass, not N (refresh reads the
+--- live cmdline when it runs, so the single pass sees the final text).
+local refresh_pending = false
 
 --- The msgarea module (loose require so this can load without it).
 ---@return table?
@@ -250,15 +254,23 @@ local KEY_ACTIONS = {
 
 ---@type string[]  the cmdline lhs's we installed (to delete on disable)
 local mapped_keys = {}
+---@type table<string, table>  lhs → the user's pre-existing cmdline maparg dict (`{}` = none), captured on
+--- install so `remove_keys` can restore it verbatim instead of leaving the lhs unmapped.
+local saved_maps = {}
 
 --- Install the command-line keymaps from `config.completion_keys`. Each runs as an EXPR map so it
 --- can decide consume-vs-fall-through: when a menu is open it SCHEDULES the action (the move/accept changes
 --- the zone's window+buffer — forbidden under the expr textlock, E565) and consumes the key; otherwise the
---- key falls through to its native cmdline behaviour.
+--- key falls through to its native cmdline behaviour. Any user cmdline mapping the lhs already had is
+--- snapshotted first (and restored on disable), so an enable/disable cycle never destroys a `cnoremap`.
 local function install_keys()
     local keys = (config or {}).completion_keys or {}
     for action, method in pairs(KEY_ACTIONS) do
         for _, lhs in ipairs(keys[action] or {}) do
+            if saved_maps[lhs] == nil then
+                -- capture ONCE per lhs (before we overwrite it), even if two actions share a key
+                saved_maps[lhs] = vim.fn.maparg(lhs, "c", false, true)
+            end
             vim.keymap.set("c", lhs, function()
                 -- `enter` is special: complete the selection FIRST while the token is still partial (so an
                 -- ambiguous command like `:LvimPick` is filled, not run → no E464), and only fall through to
@@ -283,12 +295,17 @@ local function install_keys()
     end
 end
 
---- Remove the installed cmdline keymaps.
+--- Remove the installed cmdline keymaps and restore any user mapping the lhs had before we installed ours.
 local function remove_keys()
     for _, lhs in ipairs(mapped_keys) do
         pcall(vim.keymap.del, "c", lhs)
+        local prev = saved_maps[lhs]
+        if type(prev) == "table" and not vim.tbl_isempty(prev) then
+            pcall(vim.fn.mapset, "c", false, prev) -- put the user's original cmdline map back
+        end
     end
     mapped_keys = {}
+    saved_maps = {}
 end
 
 -- ── lifecycle ──────────────────────────────────────────────────────────────────
@@ -305,20 +322,31 @@ function M.enable()
         group = augroup,
         callback = function()
             -- Defer: a `setcmdline()` (from accept/drill) fires CmdlineChanged under TEXTLOCK, where the zone
-            -- render's buffer writes are forbidden (E565). Scheduling runs the refresh outside textlock.
-            if in_cmd() then
-                vim.schedule(refresh)
+            -- render's buffer writes are forbidden (E565). Scheduling runs the refresh outside textlock. Coalesce
+            -- a burst into ONE pass (refresh reads the live cmdline when it runs) so a pasted word does not fire
+            -- N getcompletion scans.
+            if in_cmd() and not refresh_pending then
+                refresh_pending = true
+                vim.schedule(function()
+                    refresh_pending = false
+                    refresh()
+                end)
             end
         end,
     })
     api.nvim_create_autocmd("CmdlineLeave", {
         group = augroup,
         callback = function()
+            -- Reset the plain-Lua state synchronously (so has_menu() is instantly false for any in-flight
+            -- expr map), but DEFER the zone render — clear_completion writes the zone buffer, forbidden under
+            -- the CmdlineLeave textlock (E565), exactly like the CmdlineChanged sibling above.
             items, sel = {}, 0
-            local m = area()
-            if m then
-                m.clear_completion()
-            end
+            vim.schedule(function()
+                local m = area()
+                if m then
+                    pcall(m.clear_completion)
+                end
+            end)
         end,
     })
 end

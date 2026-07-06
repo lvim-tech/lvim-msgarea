@@ -100,16 +100,10 @@ require("lvim-msgarea").setup({
         drill_out = { "<S-Tab>" }, -- back up a path segment
         enter = { "<CR>" }, -- complete the selection first, then execute
     },
-    wrap = true, -- soft-wrap long lines
-    follow = true, -- tail: keep the newest line in view on append
     dedup = true, -- collapse a repeated consecutive message into "message  (xN)"
     icons = true, -- a per-level icon badge (reuses notify's level icons)
     timestamps = false, -- prefix each message with its capture time
     time_format = "%H:%M:%S",
-
-    -- Chrome
-    winbar = false, -- a thin title / summary row at the top of the panel
-    title = "Messages",
 
     -- Routing: which message kinds land in the zone (folded into notify's ext_kinds when enabled).
     -- "zone" = the styled history view (clean tinted lines; the filter bar appears when focused).
@@ -128,16 +122,6 @@ require("lvim-msgarea").setup({
     integrations = {
         blink = false, -- blink.cmp completion menu docks at the zone (above the command line)
         native = false, -- native cmdline completion docks at the zone
-    },
-
-    -- Keys active only while the panel is focused.
-    keys = {
-        close = "q", -- hide the panel (the model is kept)
-        clear = "C", -- wipe the scrollback
-        scroll_up = "<C-u>",
-        scroll_down = "<C-d>",
-        top = "gg",
-        bottom = "G",
     },
 })
 ```

@@ -6,12 +6,14 @@
 
 local M = {}
 
+-- The plugin gates Neovim >= 0.12, so `vim.health.{start,ok,warn,error,info}` always exist — no
+-- `report_*` fallback shims needed.
 local health = vim.health
-local start = health.start or health.report_start
-local ok = health.ok or health.report_ok
-local warn = health.warn or health.report_warn
-local err = health.error or health.report_error
-local info = health.info or health.report_info
+local start = health.start
+local ok = health.ok
+local warn = health.warn
+local err = health.error
+local info = health.info
 
 ---@param mod string
 ---@return boolean

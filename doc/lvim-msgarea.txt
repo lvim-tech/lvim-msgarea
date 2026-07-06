@@ -81,6 +81,6 @@ Merges {opts} into the live config in place (a shorter override list REPLACES th
 default wholesale) and registers `:LvimMsgArea`. See the README for the FULL
 default config; the option set is documented as `LvimMsgAreaConfig` in
 `lua/lvim-msgarea/config.lua` (enable, max_height, auto_resize, unified,
-scrollback, completion_*, kinds, integrations, keys, …).
+scrollback, completion_*, kinds, integrations, …).
 
 vim:tw=78:ts=8:ft=help:norl:

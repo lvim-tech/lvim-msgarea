@@ -203,10 +203,15 @@ local function build_cell(it, w)
         local nchars = vim.fn.strchars(label)
         for _, ci in ipairs(it.match) do
             if ci >= 0 and ci < nchars then
-                local b0 = label_base + vim.str_byteindex(label, ci)
+                -- `it.match` holds 0-based char / UTF-32 indices; use the modern encoding overload so the
+                -- render hot path never trips the legacy 2-arg deprecation shim (`vim.deprecate` per call).
+                local b0 = label_base + vim.str_byteindex(label, "utf-32", ci, false)
                 if b0 < limit then -- the matched char is within the visible part of the cell
                     spans = spans or {}
-                    spans[#spans + 1] = { c0 = b0, c1 = math.min(label_base + vim.str_byteindex(label, ci + 1), limit) }
+                    spans[#spans + 1] = {
+                        c0 = b0,
+                        c1 = math.min(label_base + vim.str_byteindex(label, "utf-32", ci + 1, false), limit),
+                    }
                 end
             end
         end
@@ -489,7 +494,20 @@ local function open_surface()
                             local lines, _, content_count = compose()
                             local reserved = #lines - content_count -- host + cmdline reserve rows
                             local cap = resolve(cfg.max_height) or 10
-                            return vim.o.columns, math.max(1, reserved + math.min(content_count, cap))
+                            -- Content height honours `auto_resize` / `min_height` (only when there IS content —
+                            -- a pure reserve, e.g. the idle cmdline, never pads blank message rows):
+                            --   auto_resize = false → the content block is pinned to `max_height` (fixed panel);
+                            --   auto_resize = true  → fit content, floored at `min_height`, capped at `max_height`.
+                            local content = 0
+                            if content_count > 0 then
+                                if cfg.auto_resize == false then
+                                    content = cap
+                                else
+                                    local floor = math.min(resolve(cfg.min_height) or 1, cap)
+                                    content = math.min(math.max(content_count, floor), cap)
+                                end
+                            end
+                            return vim.o.columns, math.max(1, reserved + content)
                         end,
                         render = function()
                             local lines, hls, cl = compose()
@@ -821,9 +839,15 @@ function M.handoff(fn)
     local ok, err = pcall(fn)
     batch_depth = batch_depth - 1
     if batch_depth == 0 then
-        update_visibility() -- the SINGLE coalesced reflow for both the release and the reserve
+        -- The coalesced reflow can itself error (an open_surface / provider render fault); pcall it so
+        -- `lazyredraw` is ALWAYS restored afterwards — an un-guarded throw here would leave it stuck ON and
+        -- freeze the screen between commands. Surface the reflow error only when `fn` itself succeeded.
+        local ok2, err2 = pcall(update_visibility) -- the SINGLE coalesced reflow for both release and reserve
         vim.o.lazyredraw = lz
         pcall(api.nvim__redraw, { flush = true }) -- paint the swapped zone as one clean frame
+        if ok and not ok2 then
+            ok, err = ok2, err2
+        end
     end
     if not ok then
         error(err)
@@ -970,10 +994,11 @@ end
 ---@return LvimMsgAreaHandle
 function Handle:clear()
     local s = by_name[self.name]
-    if s then
-        s.lines, s.hls, s.items, s.selected, s.height, s.render = nil, nil, nil, nil, 0, nil
-        update_visibility()
+    if not s or not seg_has_content(s) then
+        return self -- already empty — nothing to wipe, and no reflow to pay (a repeated BlinkCmpHide no-ops)
     end
+    s.lines, s.hls, s.items, s.selected, s.height, s.render = nil, nil, nil, nil, 0, nil
+    update_visibility()
     return self
 end
 
@@ -1302,6 +1327,9 @@ end
 ---@param on_bar? boolean  true = land on the filter BAR sub-sector (a descend from above); else the content
 ---@return boolean focused
 function M.focus(name, on_bar)
+    if cfg.focusable == false then
+        return false -- the zone is view-only: never take keyboard focus into it
+    end
     update_visibility() -- ensure it is open when there is anything to show
     if not (surf_panel and surf_panel.win and api.nvim_win_is_valid(surf_panel.win)) then
         return false

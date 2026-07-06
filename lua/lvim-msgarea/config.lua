@@ -17,17 +17,12 @@
 ---@field completion_columns integer  Completion grid columns (1 = list; 2/3/4… = row-major grid)
 ---@field completion_hidden  boolean  (native) include hidden dotfiles/folders in file/dir completion
 ---@field completion_keys    table    (native) command-line keymaps driving the completion grid (action → keys)
----@field wrap               boolean  Soft-wrap long lines
----@field follow             boolean  Tail: keep the newest line in view on append
 ---@field dedup              boolean  Collapse a repeated consecutive message into "message  (xN)"
 ---@field icons              boolean  A per-level icon badge (reuses notify's level icons)
 ---@field timestamps         boolean  Prefix each message with its capture time
 ---@field time_format        string   os.date format for the timestamp prefix
----@field winbar             boolean  A thin title / summary row at the top of the panel
----@field title              string   The panel title
 ---@field kinds              table<string, string>  Which message kinds land in the zone ("zone")
 ---@field integrations       table    Per-source opt-in glue (blink / native completion docks)
----@field keys               table    Keys active only while the panel is focused
 
 ---@type LvimMsgAreaConfig
 return {
@@ -50,8 +45,8 @@ return {
     -- ── Unified minibuffer (cmdline `:` `/` `?` rendered IN the zone) ─────────────────────────────
     -- When true (and lvim-hud.cmdline is active), the command-line / search input is drawn at the
     -- BOTTOM of THIS zone instead of its own float — an Emacs-style minibuffer. The panel is kept
-    -- open (persistent) so the cmdline always has its place; with auto_resize it shrinks to ~the
-    -- winbar + 1 row when idle. The cmdline reserves its rows ON TOP of `max_height` (so input is
+    -- open (persistent) so the cmdline always has its place; with auto_resize it shrinks to ~1
+    -- row when idle. The cmdline reserves its rows ON TOP of `max_height` (so input is
     -- always fully visible, never hidden by the scrollback cap).
     unified = false,
 
@@ -75,16 +70,10 @@ return {
         drill_out = { "<S-Tab>" }, -- go back up a path segment
         enter = { "<CR>" }, -- complete the selection first (so a partial/ambiguous command is filled, not run), then execute
     },
-    wrap = true, -- soft-wrap long lines
-    follow = true, -- tail: keep the newest line in view on append
     dedup = true, -- collapse a repeated consecutive message into "message  (xN)"
     icons = true, -- a per-level icon badge (reuses notify's level icons)
     timestamps = false, -- prefix each message with its capture time
     time_format = "%H:%M:%S",
-
-    -- ── Chrome ──────────────────────────────────────────────────────────────────────────────────
-    winbar = false, -- a thin title / summary row at the top of the panel (off: a compact minibuffer)
-    title = "Messages",
 
     -- ── Routing ─────────────────────────────────────────────────────────────────────────────────
     -- Which message KINDS land in the zone. Folded into notify's `ext_kinds` when enabled (and restored on
@@ -107,15 +96,5 @@ return {
     integrations = {
         blink = false, -- blink.cmp completion menu docks at the zone (above the command line)
         native = false, -- native cmdline completion docks at the zone (symmetric alternative to blink)
-    },
-
-    -- ── Keys (active only while the panel is FOCUSED) ────────────────────────────────────────────
-    keys = {
-        close = "q", -- hide the panel (the model is kept)
-        clear = "C", -- wipe the scrollback
-        scroll_up = "<C-u>",
-        scroll_down = "<C-d>",
-        top = "gg",
-        bottom = "G",
     },
 }
