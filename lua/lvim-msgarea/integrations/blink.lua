@@ -78,7 +78,7 @@ local function path_icon(label, kind_icons)
         return f ~= "" and f or nil
     end
     local name = label:match("[^/]+$") or label
-    local ic = iconlib.get(name, { provider = config.icon_provider }).glyph
+    local ic = iconlib.get(name, { provider = config.icon_provider, color_mode = config.icon_color_mode }).glyph
     if ic and ic ~= "" then
         return ic
     end
