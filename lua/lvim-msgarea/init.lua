@@ -32,8 +32,9 @@ end
 
 local M = {}
 
--- Monotonic counter for auto-host reserve segments — one per hostless `position="cmdline"` surface this zone
--- homes for the surface engine (see the host provider registered in `M.setup`).
+-- Monotonic counter for hosted reserve segments — one per hostless `position="cmdline"` surface this zone
+-- homes for the surface engine (see the host provider registered in `M.setup`) and one per window docked via
+-- `M.host_window`, so two hosts never collide on a segment name.
 local host_seq = 0
 
 ---@class LvimMsgAreaMsg
@@ -132,11 +133,13 @@ end
 --- falls back to the msgarea `max_height`).
 ---@return integer?
 local function area_cap()
-    local ok, c = pcall(require, "lvim-ui.config")
+    -- The CENTRAL geometry authority (lvim-utils.config.dock.geometry.area.height) — the single source every
+    -- docked surface's height resolves from, so the zone reserves the SAME area height the pickers / terminal do.
+    local ok, c = pcall(require, "lvim-utils.config")
     if not ok then
         return nil
     end
-    local area = ((c or {}).size or {}).area
+    local area = (((c or {}).dock or {}).geometry or {}).area
     local h = area and area.height
     return type(h) == "number" and resolve(h) or nil
 end
@@ -1102,6 +1105,168 @@ function M.segment(name, opts)
     return setmetatable({ name = name }, Handle)
 end
 
+-- ─── area hosting (the shared area-docking seam) ────────────────────────────────
+-- The ONE mechanism for docking ANYTHING in the area zone without the consumer computing the area height:
+-- `M.host` owns the dock LIFECYCLE (a unique reserve segment, the zone-clamped height from the shared
+-- `config.ui.size.area.height`, the reflow-follow with rect dedupe, the release path); the consumer only
+-- supplies `on_rect` — how to LAY OUT over the rect (a single window, or a multi-panel container).
+-- `M.host_window` is the thin single-window wrapper (reposition + WinClosed auto-release) — for consumers
+-- whose window must NOT be a surface panel (an interactive terminal needs the real cursor + insert mode).
+-- PLANNED: lvim-ui.surface's own `cfg.host`/`reposition` machinery migrates onto this same seam (its
+-- `on_rect` doing the multi-panel layout it already has), so msgarea owns ONE area-hosting mechanism.
+
+---@class LvimMsgAreaDock
+---@field release fun(self: LvimMsgAreaDock)  tear the dock down: drop the reserve + collapse the zone
+
+--- Reserve an area dock and drive its lifecycle: create a unique reserve segment, reserve MORE rows than
+--- any screen has (the zone CLAMPS to the shared `config.ui.size.area.height` — the zone, not the consumer,
+--- decides the dock height), call `opts.on_rect(rect)` now and on every zone reflow (messages appear /
+--- clear, resize) — deduped, so an unchanged rect never reaches the consumer (a hosted shell must not
+--- redraw its prompt on a benign reflow). Returns a handle with `:release()` (drop the reserve + collapse
+--- the zone + fire `opts.on_close` once), or nil when the zone is off / cannot open — the caller then
+--- falls back to its own docking.
+---
+--- `on_rect` must only LAY OUT over the rect (e.g. nvim_win_set_config) — NEVER re-reserve from inside it
+--- (that would trigger another reflow → another on_rect → a loop; same rule as the surface's reposition).
+--- `opts.on_descend` is the zone's DESCEND contract (`M.focus_content`, the editor's `<C-j>` into the zone):
+--- focus whatever the consumer hosts over the reserve and return true (false/nil = declined) — without it a
+--- descend from above has nowhere to land on this dock.
+---@param opts { on_rect: fun(rect: { win: integer, row: integer, col: integer, width: integer, height: integer }), on_close?: fun(), on_descend?: fun(): boolean? }
+---@return LvimMsgAreaDock?
+function M.host(opts)
+    if not M.is_enabled() then
+        return nil
+    end
+    opts = opts or {}
+    host_seq = host_seq + 1
+    local seg = M.segment("lvim-msgarea-dock-" .. host_seq, { kind = "reserve", priority = 5 })
+    if opts.on_descend then
+        seg:configure({ on_descend = opts.on_descend })
+    end
+    ---@type boolean  double-release guard (an explicit release can race a consumer-side teardown hook)
+    local released = false
+    ---@type table?  the last rect forwarded — the dedupe store
+    local last = nil
+
+    --- Forward `rect` to the consumer, deduped (nil / unchanged rects are dropped).
+    ---@param rect { win: integer, row: integer, col: integer, width: integer, height: integer }?
+    local function forward(rect)
+        if released or not rect then
+            return
+        end
+        if
+            last
+            and last.row == rect.row
+            and last.col == rect.col
+            and last.width == rect.width
+            and last.height == rect.height
+        then
+            return
+        end
+        last = { row = rect.row, col = rect.col, width = rect.width, height = rect.height }
+        if opts.on_rect then
+            pcall(opts.on_rect, rect)
+        end
+    end
+
+    local dock = {}
+
+    --- Tear the dock down: release the reserve (the zone collapses if nothing else remains) and fire
+    --- `on_close`. Idempotent.
+    function dock:release()
+        if released then
+            return
+        end
+        released = true
+        pcall(function()
+            seg:release()
+        end)
+        if opts.on_close then
+            pcall(opts.on_close)
+        end
+    end
+
+    -- The returned rect lays the consumer out NOW; `forward` (as on_rect) keeps it placed on every reflow.
+    local rect = seg:reserve(vim.o.lines, forward)
+    if not rect then
+        -- the zone surface failed to open — undo the reserve and decline, so the caller falls back
+        released = true
+        pcall(function()
+            seg:release()
+        end)
+        return nil
+    end
+    forward(rect)
+    return dock
+end
+
+--- Dock an EXISTING window in the area zone — the thin single-window wrapper over `M.host`: its `on_rect`
+--- re-places `win` over the reserved rect via nvim_win_set_config (zindex 210 — hosted windows sit ABOVE
+--- the zone's own surface at ~200), its `on_descend` focuses `win` (so the editor's descend-into-the-zone
+--- key lands IN the hosted window), and a WinClosed hook on `win` auto-releases the dock, so closing the
+--- window directly (`:q`, nvim_win_close) tears it down too. Returns the `M.host` handle (`:release()`),
+--- or nil when the zone is off — the caller then falls back to its own dock (e.g. a bottom split).
+---
+--- The dock manages ONLY the window's geometry: it never touches the buffer, never enters the window, and
+--- never runs mode changes — the consumer owns focus / insert / content.
+---@param win integer  an existing floating window (the consumer creates and, if it wants, focuses it)
+---@param opts? { on_close?: fun() }  fired ONCE when the dock is torn down (release or window close)
+---@return LvimMsgAreaDock?
+function M.host_window(win, opts)
+    if not (type(win) == "number" and api.nvim_win_is_valid(win)) then
+        return nil
+    end
+    opts = opts or {}
+    ---@type integer?  the WinClosed autocmd tearing the dock down when `win` is closed directly
+    local au = nil
+    local dock = M.host({
+        on_rect = function(rect)
+            if not api.nvim_win_is_valid(win) then
+                return
+            end
+            pcall(api.nvim_win_set_config, win, {
+                relative = "editor",
+                row = rect.row,
+                col = rect.col,
+                width = math.max(1, rect.width),
+                height = math.max(1, rect.height),
+                zindex = 210,
+            })
+        end,
+        on_close = function()
+            -- both teardown paths land here: an explicit release unhooks WinClosed; a WinClosed-driven
+            -- release finds `au` already nil'd by its own callback.
+            if au then
+                pcall(api.nvim_del_autocmd, au)
+                au = nil
+            end
+            if opts.on_close then
+                opts.on_close()
+            end
+        end,
+        -- The zone's descend (`M.focus_content` — the editor's "focus down" key): land IN the hosted
+        -- window. Focus only — the consumer owns modes (a terminal enters insert via its own autocmd/config).
+        on_descend = function()
+            if not api.nvim_win_is_valid(win) then
+                return false
+            end
+            return (pcall(api.nvim_set_current_win, win))
+        end,
+    })
+    if not dock then
+        return nil
+    end
+    au = api.nvim_create_autocmd("WinClosed", {
+        pattern = tostring(win),
+        once = true,
+        callback = function()
+            au = nil
+            dock:release()
+        end,
+    })
+    return dock
+end
+
 --- Introspection: the currently registered segments as `{ [name] = kind }` (for `:checkhealth` / debug).
 ---@return table<string, string>
 function M.segments()
@@ -1478,6 +1643,31 @@ function M.setup(user_cfg)
             end
         end,
     })
+
+    -- Register THIS zone as the base dock's AREA slot provider: `dock.slot("area")` defers to us for the
+    -- reserved rect because the ZONE — not the dock — owns the area's real geometry (its true panel width and
+    -- the rows reserved above the messages). The edge stays INVERTED: the base dock never requires msgarea; it
+    -- only calls the provider we register here (it falls back to a bottom-edge rect when none is set). The rect
+    -- is FULL-width at the zone's actual panel width (`M.zone_width`), `area_cap()` lines tall (the SHARED
+    -- `config.dock.geometry.area.height` authority), docked at the bottom cmdline zone (the statusline row —
+    -- the `- 1` — stays free). Re-registering on a second `setup()` just re-sets the same slot, so it's idempotent.
+    require("lvim-utils.dock").set_slot_provider("area", function()
+        local cap = area_cap() or 10
+        return {
+            row = math.max(0, vim.o.lines - cap - 1),
+            col = 0,
+            width = M.zone_width(),
+            height = cap,
+        }
+    end)
+
+    -- Register THIS zone as the base dock's SWAP coalescer: when the dock swaps two AREA consumers it does a
+    -- RELEASE (hide the old) immediately followed by a RESERVE (show the new) in this zone. Run as two separate
+    -- reflows the zone collapses on the release then grows on the reserve — a visible flicker + a transient
+    -- STACK (the old surface's rect briefly coexists with the new). Handing the dock our `surface.zone_handoff`
+    -- (→ `M.handoff`, guarded by is_enabled) makes it wrap the whole swap in one coalesced reflow → a single
+    -- clean frame. Same INVERTED edge as the slot provider above: the base dock never requires us; we inject it.
+    require("lvim-utils.dock").set_handoff(require("lvim-ui.surface").zone_handoff)
 
     -- Register THIS zone as the cmdline's unified-minibuffer host: a `cfg.unified` cmdline docks its float at
     -- the bottom of the zone instead of the editor bottom. The edge is INVERTED — the cmdline never requires

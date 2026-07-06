@@ -66,6 +66,27 @@ ma.clear() -- wipe the scrollback
 The unified minibuffer (`unified = true`) needs `lvim-hud.cmdline` enabled; the completion docks
 (`integrations.blink` / `integrations.native`) route the respective completion menu into the zone.
 
+### Area hosting (dock a window in the zone)
+
+Any plugin can dock a window in the area zone **without computing the area height itself** — the
+zone owns it (the shared control-center `ui.size.area.height` setting) and keeps the window placed
+as the zone reflows (messages appear / clear, resize). lvim-term's `area` layout docks this way.
+
+```lua
+local dock = require("lvim-msgarea").host_window(win, {
+    on_close = function() end, -- fired once when the dock is torn down
+})
+-- nil when the zone is disabled → fall back to your own docking. Otherwise the window is placed
+-- over the reserved rows immediately and follows every reflow; closing `win` directly releases too.
+-- A DESCEND into the zone from the editor (focus_content, e.g. your <C-j>) lands IN the window.
+dock:release() -- drop the reserve and collapse the zone (does not close `win`)
+```
+
+`host_window` is a thin single-window wrapper over `host({ on_rect, on_close })` — the lower-level
+seam whose `on_rect(rect)` lets a consumer lay out anything (e.g. a multi-panel container) over the
+reserved rect. Reflows with an unchanged rect are deduped, so a hosted shell never redraws its
+prompt on a benign zone repaint.
+
 ## Configuration
 
 `setup()` merges your options into the live config in place (a shorter override list replaces the default

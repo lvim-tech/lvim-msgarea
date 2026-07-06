@@ -71,6 +71,24 @@ The unified minibuffer (`unified = true`) needs lvim-hud.cmdline enabled; the
 completion docks (`integrations.blink` / `integrations.native`) route the
 respective completion menu into the zone.
 
+                                                     *lvim-msgarea.host_window()*
+Area hosting — any plugin can dock a window in the zone WITHOUT computing the
+area height itself: the ZONE owns it (the shared `ui.size.area.height` setting)
+and keeps the window placed as the zone reflows (messages appear / clear,
+resize). lvim-term's `area` layout docks this way. >lua
+    local dock = require("lvim-msgarea").host_window(win, {
+        on_close = function() end, -- fired once when the dock is torn down
+    })
+    -- nil when the zone is disabled (fall back to your own dock)
+    dock:release() -- drop the reserve + collapse the zone (win stays open)
+<
+Closing {win} directly releases the dock too, and a DESCEND into the zone from
+the editor (focus_content, e.g. a <C-j> wired to it) lands IN the hosted
+window. `host_window` is a thin wrapper over `host({ on_rect, on_close,
+on_descend })` — the lower-level seam whose `on_rect(rect)` lets a consumer
+lay out anything over the reserved rect (deduped: an unchanged rect never
+reaches the consumer).
+
 ==============================================================================
 5. CONFIGURATION                                     *lvim-msgarea-configuration*
 
