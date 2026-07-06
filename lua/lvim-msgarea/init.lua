@@ -516,6 +516,14 @@ end
 
 --- Close the backing surface.
 local function close_surface()
+    if active_name ~= nil then
+        M.blur()
+    end
+    for _, s in pairs(segments or {}) do
+        if s.on_rect then
+            pcall(s.on_rect, nil)
+        end
+    end
     if surf and surf.close then
         pcall(surf.close)
     end
@@ -641,6 +649,7 @@ end
 --- Turn the area ON: register the sink, route its kinds, install resize autocmd.
 function M.enable()
     cfg.enable = true
+    require("lvim-msgarea.integrations").setup(cfg)
     local notify = require("lvim-hud.notify")
     notify.register_sink("msgarea", on_message)
     notify.route_kinds(cfg.kinds or {})
@@ -667,6 +676,7 @@ end
 --- Turn the area OFF: full teardown (unroute, unregister, close, drop autocmds). The model is kept.
 function M.disable()
     cfg.enable = false
+    require("lvim-msgarea.integrations").teardown()
     local notify = require("lvim-hud.notify")
     notify.unroute_kinds(vim.tbl_keys(cfg.kinds or {}))
     notify.register_sink("msgarea", nil)
