@@ -8,6 +8,7 @@
 
 local api = vim.api
 local config = require("lvim-msgarea.config")
+local iconlib = require("lvim-utils.icons")
 
 local M = {}
 
@@ -66,7 +67,7 @@ end
 --- A per-item glyph for a PATH completion. blink's cmdline source tags EVERY item `Property` (so the
 --- kind icon is identical for files, dirs and commands alike); for a file/dir completion we instead pick
 --- the glyph from the item's real nature — a directory (trailing "/") gets blink's Folder glyph, a file
---- its nvim-web-devicons glyph (by extension). Only the GLYPH is chosen; the colour stays the row accent.
+--- its lvim-icons glyph (by extension). Only the GLYPH is chosen; the colour stays the row accent.
 --- Returns nil to fall back to the kind icon.
 ---@param label string
 ---@param kind_icons table<string, string>
@@ -76,13 +77,10 @@ local function path_icon(label, kind_icons)
         local f = vim.trim(kind_icons.Folder or "")
         return f ~= "" and f or nil
     end
-    local ok, devicons = pcall(require, "nvim-web-devicons")
-    if ok then
-        local name = label:match("[^/]+$") or label
-        local ic = devicons.get_icon(name, name:match("%.([%w_%-]+)$"), { default = true })
-        if ic and ic ~= "" then
-            return ic
-        end
+    local name = label:match("[^/]+$") or label
+    local ic = iconlib.get(name, { provider = config.icon_provider }).glyph
+    if ic and ic ~= "" then
+        return ic
     end
     local f = vim.trim(kind_icons.File or "")
     return f ~= "" and f or nil

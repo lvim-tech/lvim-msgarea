@@ -7,6 +7,7 @@
 
 ---@class LvimMsgAreaConfig
 ---@field enable             boolean  Master switch (live-toggleable via :LvimMsgArea)
+---@field icon_provider       "auto"|"lvim"|"devicons"|"mini"  Which plugin supplies path-completion file icons (via lvim-utils.icons)
 ---@field max_height         number   The panel is never taller than this (>=1 absolute lines; <1 a fraction)
 ---@field auto_resize        boolean  Fit content up to the cap (true) vs always max_height (false)
 ---@field min_height         number   Floor while auto-resizing
@@ -27,6 +28,9 @@
 ---@type LvimMsgAreaConfig
 return {
     enable = false, -- master switch (live-toggleable via :LvimMsgArea / M.toggle)
+    -- Which icon plugin supplies file glyphs for path completions (resolved through lvim-utils.icons):
+    -- "auto" prefers lvim-icons, then nvim-web-devicons, then mini.icons, else the kind icon.
+    icon_provider = "auto",
 
     -- ── Height — `max_height` is the ONLY hard rule ─────────────────────────────────────────────
     -- Units (both heights): a value >= 1 is an ABSOLUTE line count; a value < 1 is a FRACTION of
