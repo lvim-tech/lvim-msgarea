@@ -873,9 +873,23 @@ function M.has_messages()
     return s ~= nil and s.lines ~= nil and #s.lines > 0
 end
 
+---@type (fun(): boolean)?  a registered DESCEND FALLBACK — tried when the zone itself has nothing to descend
+--- into. The lvim-utils dock registers `dock.descend` here (edge-inverted: msgarea never requires the dock),
+--- so a single `<C-j>` → `focus_content()` binding descends into the AREA zone AND a bottom/float dock uniformly
+--- — without the user's keymap needing to know about the dock. See `M.set_descend_fallback`.
+local descend_fallback = nil
+
+--- Register (or clear with nil) the descend fallback (see `descend_fallback`). Idempotent.
+---@param fn (fun(): boolean)?
+function M.set_descend_fallback(fn)
+    descend_fallback = fn
+end
+
 --- DESCEND into the zone from ABOVE (the editor): focus the TOPMOST thing in it, by priority. A hosted float
 --- (a finder, whose reserve carries `on_descend`) is focused FIRST — so you land in the finder, not skip past
---- it to the messages below; otherwise the first content segment. Returns whether it took focus.
+--- it to the messages below; otherwise the first content segment. When the ZONE has nothing to descend into,
+--- defer to the registered `descend_fallback` (the dock's bottom/float descend) so ONE `<C-j>` binding covers
+--- every docked layout. Returns whether it took focus.
 ---@return boolean focused
 function M.focus_content()
     for _, s in ipairs(segments) do
@@ -886,6 +900,10 @@ function M.focus_content()
         elseif seg_has_content(s) then
             return M.focus(s.name, true) -- a descend from above lands on the segment's filter BAR
         end
+    end
+    -- Nothing in the zone → try the registered dock descend (a bottom / float docked consumer).
+    if descend_fallback then
+        return descend_fallback() == true
     end
     return false
 end
