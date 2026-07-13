@@ -481,6 +481,12 @@ local function open_surface()
         -- cmdline region during cmdline mode, which would cover the statusline row
         enter = false, -- never steal focus on open — the cmdline / editor owns it (M.focus enters explicitly)
         persistent = true, -- no auto-close keys; msgarea closes it when the stack empties
+        -- READABLE panel: the zone is a SCROLLBACK you read — and copy from. The modal key lock (the default)
+        -- nops every unbound normal-mode key, which took the motions, `v`/`y` (so the text on screen could not
+        -- be selected or yanked at ALL) and even `<C-c>`/`<C-w>`. The mouse lock — the thing the modal lock was
+        -- actually introduced for (a drag must never start a Visual selection under a hidden cursor) — still
+        -- applies; only the CONTENT keyboard is handed back.
+        lock_keys = "light",
         -- The `max_height` cap applies to the MESSAGE/completion content only (so a flood of messages can't
         -- fill the screen), NOT to RESERVE rows — a hosted float (the area finder) must always get its full
         -- height. So the size fn caps content + adds reserves on top; the surface `max` is left wide open and
@@ -679,6 +685,24 @@ function M.enable()
         pcall(api.nvim_del_augroup_by_id, augroup)
     end
     augroup = api.nvim_create_augroup("LvimUtilsMsgArea", { clear = true })
+    -- Focus can leave the zone WITHOUT its blur keys — a mouse click in the editor, a `<C-w>` jump, any
+    -- plugin moving the cursor. The zone must notice: otherwise it stays "focused" forever (its segments'
+    -- `on_blur` never fires, so a message's countdown stays paused and the zone never closes), while the
+    -- keyboard interaction it installed is silently still live.
+    api.nvim_create_autocmd("WinEnter", {
+        group = augroup,
+        callback = function()
+            if not active_name then
+                return
+            end
+            local w = api.nvim_get_current_win()
+            if
+                not (surf_panel and surf_panel.win and api.nvim_win_is_valid(surf_panel.win) and w == surf_panel.win)
+            then
+                M.blur({ keep_focus = true }) -- focus is already where the user put it — never pull it back
+            end
+        end,
+    })
     api.nvim_create_autocmd("VimResized", {
         group = augroup,
         callback = function()
@@ -1335,6 +1359,16 @@ end
 --- row (the filter bar) to the actual panel, not `vim.o.columns` (which can differ), and its chevrons land at
 --- the true right edge. Falls back to `vim.o.columns` before the panel exists.
 ---@return integer
+--- The zone's PANEL window (nil when closed) — a content owner needs it to keep the reader's place when it
+--- repaints under them (a message arriving while they browse pushes every row down; see lvim-hud's history).
+---@return integer?
+function M.zone_win()
+    if surf_panel and surf_panel.win and api.nvim_win_is_valid(surf_panel.win) then
+        return surf_panel.win
+    end
+    return nil
+end
+
 function M.zone_width()
     if surf_panel and surf_panel.win and api.nvim_win_is_valid(surf_panel.win) then
         return api.nvim_win_get_width(surf_panel.win)
@@ -1574,7 +1608,8 @@ end
 
 --- Leave focused interaction: drop the interaction keymaps and return focus to the previous window (the
 --- zone stays open). An `on_confirm` that opens something should call this first.
-function M.blur()
+---@param opts? { keep_focus?: boolean }  keep_focus: focus already moved elsewhere (a click) — do not pull it back
+function M.blur(opts)
     local s = active_seg() -- capture before clearing, to fire its on_blur (e.g. restore the statusline)
     remove_interaction()
     if cursor_au then
@@ -1587,7 +1622,7 @@ function M.blur()
     if s and s.on_blur then
         pcall(s.on_blur)
     end
-    if prev_win and api.nvim_win_is_valid(prev_win) then
+    if not (opts and opts.keep_focus) and prev_win and api.nvim_win_is_valid(prev_win) then
         pcall(api.nvim_set_current_win, prev_win)
     end
     prev_win = nil
@@ -1701,6 +1736,7 @@ function M.setup(user_cfg)
         is_focused = M.is_focused,
         bar_focused = M.bar_focused,
         zone_width = M.zone_width,
+        zone_win = M.zone_win, -- the panel window: the history owner keeps the reader's place across a repaint
         blur = M.blur,
     })
 end
