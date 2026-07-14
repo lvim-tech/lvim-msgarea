@@ -1385,6 +1385,29 @@ function M.zone_width()
     return vim.o.columns
 end
 
+--- Keep the cursor INSIDE the focused segment's rows. The composed buffer is rebuilt on every paint, and a
+--- dock hosted ABOVE the messages (a calendar, the control center) pushes them DOWN by its reserve rows — the
+--- cursor is a plain buffer row, so it stayed put and ended up in the blank reserve. The zone then LOOKED
+--- focused while `V`/`y` selected an empty line and `j`/`k` walked padding. Clamp instead of trusting the row.
+---@return integer|nil row  the clamped 1-based buffer row (nil when there is nothing to clamp to)
+local function clamp_cursor()
+    local s = active_seg()
+    if not (s and surf_panel and surf_panel.win and api.nvim_win_is_valid(surf_panel.win)) then
+        return nil
+    end
+    local first = (s.line_offset or 0) + 1
+    local last = first + math.max(0, (s._drawn or 0) - 1)
+    if (s._drawn or 0) <= 0 then
+        return nil
+    end
+    local row = api.nvim_win_get_cursor(surf_panel.win)[1]
+    local want = math.max(first, math.min(row, last))
+    if want ~= row then
+        pcall(api.nvim_win_set_cursor, surf_panel.win, { want, 0 })
+    end
+    return want
+end
+
 --- Move focus between the focused segment's BAR sub-sector and its content rows; fires the segment's
 --- `on_bar_change` (so the owner re-renders the bar's hover) and repaints. No-op without a titled segment.
 ---@param on boolean  true = focus the bar, false = focus the content
@@ -1597,7 +1620,8 @@ function M.focus(name, on_bar)
         buffer = surf_panel.buf,
         callback = function()
             if surf_panel and surf_panel.win and api.nvim_win_is_valid(surf_panel.win) then
-                active_row = api.nvim_win_get_cursor(surf_panel.win)[1] - 1
+                local row = clamp_cursor() or api.nvim_win_get_cursor(surf_panel.win)[1]
+                active_row = row - 1
                 if surf_panel.refresh then
                     surf_panel.refresh()
                 end
@@ -1605,7 +1629,16 @@ function M.focus(name, on_bar)
         end,
     })
     if surf_panel.refresh then
-        surf_panel.refresh() -- paint the initial active-row boost
+        surf_panel.refresh() -- paint the initial active-row boost (recomputes every segment's line_offset)
+    end
+    -- The offsets are only final AFTER that paint: re-land the cursor on the segment's real first row (a dock
+    -- above may have shifted it), then repaint so the active-row tint follows.
+    local landed = clamp_cursor()
+    if landed then
+        active_row = landed - 1
+        if surf_panel.refresh then
+            surf_panel.refresh()
+        end
     end
     if s and s.on_focus then
         pcall(s.on_focus) -- e.g. the history publishes "Messages" to the statusline (restored on blur)
