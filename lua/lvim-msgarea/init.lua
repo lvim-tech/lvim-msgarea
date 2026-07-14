@@ -1105,7 +1105,8 @@ end
 
 --- Configure the segment's header `title` (a row drawn above its content) and the `keys` active while it is
 --- focused (lhs → fn(handle) — e.g. the history view's level filters). Set fields are merged; nil ones keep.
----@param opts { title?: string, title_hls?: table, title_when_focused?: boolean, keys?: table<string, fun(handle: LvimMsgAreaHandle)>, on_confirm?: fun(item: table?, idx: integer?), on_focus?: fun(), on_blur?: fun(), on_bar_change?: fun(focused: boolean), on_descend?: fun(): boolean? }
+---@param opts table  segment options: title / title_hls / title_when_focused / keys / on_confirm / on_focus /
+---                   on_blur / on_bar_change / on_descend / on_ascend (see LvimMsgAreaSegment)
 ---@return LvimMsgAreaHandle
 function Handle:configure(opts)
     local s = seg_get(self.name)
@@ -1193,6 +1194,7 @@ function M.host(opts)
     host_seq = host_seq + 1
     local seg = M.segment("lvim-msgarea-dock-" .. host_seq, { kind = "reserve", priority = 5 })
     if opts.on_descend then
+        ---@diagnostic disable-next-line: undefined-field
         seg:configure({ on_descend = opts.on_descend, on_ascend = opts.on_ascend })
     end
     ---@type boolean  double-release guard (an explicit release can race a consumer-side teardown hook)
@@ -1368,7 +1370,6 @@ end
 --- The zone panel's REAL text width (style=minimal, so no gutter) — so a segment owner builds a full-width
 --- row (the filter bar) to the actual panel, not `vim.o.columns` (which can differ), and its chevrons land at
 --- the true right edge. Falls back to `vim.o.columns` before the panel exists.
----@return integer
 --- The zone's PANEL window (nil when closed) — a content owner needs it to keep the reader's place when it
 --- repaints under them (a message arriving while they browse pushes every row down; see lvim-hud's history).
 ---@return integer?
@@ -1629,17 +1630,17 @@ function M.focus(name, on_bar)
             end
         end,
     })
-    if surf_panel.refresh then
-        surf_panel.refresh() -- paint the initial active-row boost (recomputes every segment's line_offset)
-    end
-    -- The offsets are only final AFTER that paint: re-land the cursor on the segment's real first row (a dock
-    -- above may have shifted it), then repaint so the active-row tint follows.
+    -- The cursor must land on the focused segment's REAL first row — and a dock above (a calendar, the control
+    -- center) shifts that row by its reserve. `compose()` is what computes every segment's `line_offset` /
+    -- `_drawn`, so run it FIRST and clamp against fresh numbers: painting once to learn the layout and again
+    -- after moving the cursor made the zone visibly flicker on every `:Messages`.
+    compose()
     local landed = clamp_cursor()
     if landed then
         active_row = landed - 1
-        if surf_panel.refresh then
-            surf_panel.refresh()
-        end
+    end
+    if surf_panel.refresh then
+        surf_panel.refresh() -- ONE paint: the layout and the active-row boost together
     end
     if s and s.on_focus then
         pcall(s.on_focus) -- e.g. the history publishes "Messages" to the statusline (restored on blur)
