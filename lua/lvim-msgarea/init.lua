@@ -76,6 +76,7 @@ local batch_depth = 0
 ---@field line_offset? integer  (set by compose) the composed-buffer row where this segment's content starts
 ---@field on_rect? fun(rect: table?)  (reserve kind) called with the segment's CURRENT rect on every reflow
 ---@field on_descend? fun(): boolean?  (reserve kind) focus the hosted float over this reserve (the finder) on a descend from above; false = declined
+---@field on_ascend? fun(): boolean?   (reserve kind) focus the hosted float FROM BELOW (its last sector) when the zone is left upward; false = declined
 ---@field render? fun(width: integer): string[], table?  (provider kind) lazy content
 ---@field on_confirm? fun(item: table?, idx: integer?)  fired on <CR> while the zone is focused (grid)
 ---@field on_move? fun(idx: integer)  fired when the selection moves while the zone is focused (grid)
@@ -1105,6 +1106,7 @@ function Handle:configure(opts)
     end
     if opts.on_descend ~= nil then
         s.on_descend = opts.on_descend
+        s.on_ascend = opts.on_ascend
     end
     if opts.title ~= nil then
         s.title = opts.title
@@ -1183,7 +1185,7 @@ function M.host(opts)
     host_seq = host_seq + 1
     local seg = M.segment("lvim-msgarea-dock-" .. host_seq, { kind = "reserve", priority = 5 })
     if opts.on_descend then
-        seg:configure({ on_descend = opts.on_descend })
+        seg:configure({ on_descend = opts.on_descend, on_ascend = opts.on_ascend })
     end
     ---@type boolean  double-release guard (an explicit release can race a consumer-side teardown hook)
     local released = false
@@ -1490,7 +1492,8 @@ local function install_interaction()
         map(lhs, function()
             if s and s.title and not bar_focused then
                 set_bar_focus(true)
-            else
+            elseif not M.ascend() then
+                -- Nothing hosted above us → leave the zone entirely (the editor).
                 M.blur()
             end
         end)
@@ -1608,6 +1611,24 @@ end
 
 --- Leave focused interaction: drop the interaction keymaps and return focus to the previous window (the
 --- zone stays open). An `on_confirm` that opens something should call this first.
+--- Walk UP out of the messages INTO the dock hosted above them (a calendar / finder / terminal in the zone),
+--- landing on its LAST sector — its footer bar — so the chain is symmetric with the descend. Returns false
+--- when nothing is hosted above (the caller then leaves the zone).
+---@return boolean
+function M.ascend()
+    for _, s in ipairs(segments) do
+        if s.kind == "reserve" and s.on_ascend and (s.height or 0) > 0 then
+            local ok = s.on_ascend()
+            if ok ~= false then
+                remove_interaction()
+                active_row, active_name, bar_focused = nil, nil, false
+                return true
+            end
+        end
+    end
+    return false
+end
+
 ---@param opts? { keep_focus?: boolean }  keep_focus: focus already moved elsewhere (a click) — do not pull it back
 function M.blur(opts)
     local s = active_seg() -- capture before clearing, to fire its on_blur (e.g. restore the statusline)
@@ -1666,6 +1687,16 @@ function M.setup(user_cfg)
                         state.focus_sector(1)
                     end
                     return true
+                end,
+                -- The MIRROR of the descend: leaving the messages UPWARD walks into the dock hosted above them
+                -- at its LAST sector (its footer bar), not over it into the editor. Without this, `<C-k>` from
+                -- the zone jumped clean past the dock's own chrome.
+                on_ascend = function()
+                    if state.focus_sector and state.sector_count then
+                        state.focus_sector(state.sector_count())
+                        return true
+                    end
+                    return false
                 end,
             })
             -- stacked preview (above/below) lays out two panel ROWS → reserve up to max_height*2; a single
