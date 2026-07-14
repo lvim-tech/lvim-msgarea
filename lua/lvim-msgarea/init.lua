@@ -77,6 +77,7 @@ local batch_depth = 0
 ---@field on_rect? fun(rect: table?)  (reserve kind) called with the segment's CURRENT rect on every reflow
 ---@field on_descend? fun(): boolean?  (reserve kind) focus the hosted float over this reserve (the finder) on a descend from above; false = declined
 ---@field on_ascend? fun(): boolean?   (reserve kind) focus the hosted float FROM BELOW (its last sector) when the zone is left upward; false = declined
+---@field _drawn? integer             (set by compose) how many rows the last paint actually drew for this segment
 ---@field render? fun(width: integer): string[], table?  (provider kind) lazy content
 ---@field on_confirm? fun(item: table?, idx: integer?)  fired on <CR> while the zone is focused (grid)
 ---@field on_move? fun(idx: integer)  fired when the selection moves while the zone is focused (grid)
@@ -1389,7 +1390,7 @@ end
 --- dock hosted ABOVE the messages (a calendar, the control center) pushes them DOWN by its reserve rows — the
 --- cursor is a plain buffer row, so it stayed put and ended up in the blank reserve. The zone then LOOKED
 --- focused while `V`/`y` selected an empty line and `j`/`k` walked padding. Clamp instead of trusting the row.
----@return integer|nil row  the clamped 1-based buffer row (nil when there is nothing to clamp to)
+---@return integer? row  the clamped 1-based buffer row (nil when there is nothing to clamp to)
 local function clamp_cursor()
     local s = active_seg()
     if not (s and surf_panel and surf_panel.win and api.nvim_win_is_valid(surf_panel.win)) then
