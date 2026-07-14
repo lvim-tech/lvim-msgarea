@@ -129,14 +129,12 @@ local function resolve(v)
     return v < 1 and math.max(1, math.floor(vim.o.lines * v)) or math.floor(v)
 end
 
---- The TOTAL height (lines) a hosted dock may occupy in the zone — the SHARED `config.ui.size.area.height`
---- (edited live by the config panels), a fraction/absolute resolved to lines. The total, NOT per stacked row:
---- a stacked preview SPLITS this in the surface. nil when the shared config is unavailable (the reserve then
---- falls back to the msgarea `max_height`).
+--- The TOTAL height (lines) a hosted dock may occupy in the zone — the CENTRAL geometry authority
+--- (`lvim-utils.config.dock.geometry.area.height`), a fraction/absolute resolved to lines. The ONE ceiling for
+--- every docked surface: a panel with a preview beside its list shares these rows between the two. nil when the
+--- shared config is unavailable (the reserve then falls back to the msgarea `max_height`).
 ---@return integer?
 local function area_cap()
-    -- The CENTRAL geometry authority (lvim-utils.config.dock.geometry.area.height) — the single source every
-    -- docked surface's height resolves from, so the zone reserves the SAME area height the pickers / terminal do.
     local ok, c = pcall(require, "lvim-utils.config")
     if not ok then
         return nil
@@ -785,6 +783,30 @@ function M.cmdline_done()
     end
     s.height = 0
     update_visibility()
+end
+
+--- Drop the cmdline's reserved rows from the zone's DATA, with no window work — safe to call from the ui-event
+--- fast context, which `nvim_*` calls are not.
+---
+--- WHY it exists: `cmdline_hide` arrives, the cmdline's real teardown is SCHEDULED (it must be — it closes
+--- windows), and the typed command then runs SYNCHRONOUSLY, before that tick. A command that opens a docked
+--- panel therefore reserves its rows while the zone still counts the cmdline's — so the zone composes the SUM
+--- (measured: 31 + 6 = 37 rows), paints it, and only on the next tick does the cmdline release its 6 and the
+--- zone settle back to 31. That is the panel "opening a few rows too tall and then shrinking".
+--- Zeroing the rows HERE, the instant the cmdline hides, means the panel's reserve already sees a cmdline of
+--- height 0: one compose, one paint. The scheduled teardown still runs (it closes the float and reflows).
+function M.cmdline_clear_rows()
+    local s = by_name["cmdline"]
+    if s then
+        s.height = 0
+    end
+    -- The COMPLETION grid belongs to the cmdline that is going away — and it is the taller half (a `:Lvim…`
+    -- completion is several rows). Drop its items too, or the panel's reserve still lands on top of them.
+    local c = by_name["completion"]
+    if c then
+        c.items = {}
+        c.selected = nil
+    end
 end
 
 --- Intercepted completion: an integration (e.g. blink) hands us its live items + selection; we render
@@ -1798,7 +1820,13 @@ function M.setup(user_cfg)
     -- Register THIS zone as the cmdline's unified-minibuffer host: a `cfg.unified` cmdline docks its float at
     -- the bottom of the zone instead of the editor bottom. The edge is INVERTED — the cmdline never requires
     -- msgarea; it just calls the provider we register here (nil-guarded internally when the zone is off).
-    require("lvim-hud.cmdline").set_host_provider({ host = M.cmdline_host, done = M.cmdline_done })
+    require("lvim-hud.cmdline").set_host_provider({
+        host = M.cmdline_host,
+        done = M.cmdline_done,
+        -- `clear` is the fast-context-safe half of `done`: drop the reserved ROWS now (data only), leave the
+        -- window teardown to the scheduled `done`. See `M.cmdline_clear_rows`.
+        clear = M.cmdline_clear_rows,
+    })
 
     -- Register THIS zone as notify's message-history sink: `:Messages` browses the log IN the zone (below a
     -- hosted finder) rather than in notify's own cmdline pager. Same inversion — notify never requires msgarea;
