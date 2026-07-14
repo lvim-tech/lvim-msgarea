@@ -395,6 +395,12 @@ local function compose()
             end
         end
 
+        -- What the renderer ACTUALLY drew for this segment. `seg_has_content` guesses from the segment's shape
+        -- (lines / items / render), and it guessed WRONG for the hud's history: the descend from a dock then
+        -- believed the zone was empty and refused to enter it, so `<C-j>` died inside the dock. The truth is
+        -- what was painted — record it.
+        s._drawn = #seg_lines
+
         -- 2) a title header row above the content (only when the segment actually has content, never a reserve).
         -- `title_hls` (a span list) styles it per-cell — e.g. the history's coloured filter-bar badges; else the
         -- whole row is the plain title tint. `title_when_focused` hides it unless this segment is FOCUSED — so
@@ -939,7 +945,8 @@ end
 ---@return boolean focused
 function M.focus_messages()
     for _, s in ipairs(segments) do
-        if s.kind ~= "reserve" and seg_has_content(s) then
+        -- VISIBLE = what the last paint drew (see `_drawn`), not what the segment's shape suggests.
+        if s.kind ~= "reserve" and ((s._drawn or 0) > 0 or seg_has_content(s)) then
             return M.focus(s.name, true)
         end
     end
