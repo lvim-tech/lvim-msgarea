@@ -717,6 +717,31 @@ function M.enable()
             end
         end,
     })
+    -- Tab-follow. The zone renders through a `position="cmdline"` surface: a per-tabpage float that also grows
+    -- the GLOBAL `cmdheight`. A Neovim float cannot span tabpages, so when the current tab changes the float
+    -- must move WITH the user — otherwise it strands on the old tab while its (global) cmdheight reservation
+    -- shows as blank, un-draggable rows under the statusline on the new one; and if that old tab is later
+    -- `:tabclose`d, the float is destroyed EXTERNALLY (not via `surf.close`), so its cmdheight is never
+    -- restored — the reservation sticks forever and the zone never reappears (measured: after tabnew→tabclose
+    -- the origin tab kept cmdheight but lost its frames). So close CLEANLY on TabLeave (restores cmdheight and
+    -- tears the float down on the tab we still own, BEFORE any tabclose can orphan it) and reopen on the
+    -- now-current tab from TabEnter. Symmetric, so cmdheight is released + re-grown per tab and never leaks.
+    api.nvim_create_autocmd("TabLeave", {
+        group = augroup,
+        callback = function()
+            if surf then
+                close_surface()
+            end
+        end,
+    })
+    api.nvim_create_autocmd("TabEnter", {
+        group = augroup,
+        callback = function()
+            if cfg.enable then
+                vim.schedule(update_visibility) -- re-anchor the zone onto the tab just entered
+            end
+        end,
+    })
 
     -- The zone is HIDDEN while empty; it appears only when there is something to show (a message, the
     -- unified cmdline, or a completion list). Rebuild the messages segment from any retained scrollback.
