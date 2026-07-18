@@ -801,9 +801,17 @@ function M.cmdline_host(height)
 end
 
 --- (Unified) Release the command-line's reserved rows and reflow (hides the zone if nothing remains).
+---
+--- Must reflow even when the height is ALREADY 0: on `cmdline_hide` the fast-context `cmdline_clear_rows`
+--- zeroes the row DATA first (so a synchronously-run command composes without them) but does NO window work,
+--- and this — the scheduled teardown — is what actually reflows. Bailing on `height == 0` (as it once did)
+--- meant that after a bare `:`+<Esc> the zone had zeroed rows but was never reflowed, so the grown
+--- `cmdheight` never shrank back and the statusline stayed one row up. So: only bail when the segment never
+--- existed; otherwise always `update_visibility` (which closes the zone / restores cmdheight when nothing
+--- else remains, or repaints it around a command's freshly-reserved rows when something does).
 function M.cmdline_done()
     local s = by_name["cmdline"]
-    if not s or (s.height or 0) == 0 then
+    if not s then
         return
     end
     s.height = 0
