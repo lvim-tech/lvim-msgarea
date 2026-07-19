@@ -57,10 +57,9 @@ automatically when a message is routed to it and hides when it empties.
 ```lua
 local ma = require("lvim-msgarea")
 ma.toggle() -- show / hide the zone (the model is kept)
-ma.enable() -- turn the zone on   (register the sink + route kinds)
+ma.enable() -- turn the zone on   (route its kinds to the zone + open the surface)
 ma.disable() -- turn the zone off
 ma.focus_messages() -- focus the zone to browse the message history
-ma.clear() -- wipe the scrollback
 ```
 
 The unified minibuffer (`unified = true`) needs `lvim-hud.cmdline` enabled; the completion docks
@@ -107,7 +106,6 @@ require("lvim-msgarea").setup({
     unified = false,
 
     -- Content
-    scrollback = 500, -- max retained message lines (ring buffer)
     completion_max = 12, -- max intercepted completion rows shown at once
     completion_columns = 1, -- 1 = a list; 2/3/4… = a row-major grid
     completion_hidden = true, -- (native) include hidden dotfiles/folders in file/dir completion
@@ -121,13 +119,9 @@ require("lvim-msgarea").setup({
         drill_out = { "<S-Tab>" }, -- back up a path segment
         enter = { "<CR>" }, -- complete the selection first, then execute
     },
-    dedup = true, -- collapse a repeated consecutive message into "message  (xN)"
-    icons = true, -- a per-level icon badge (reuses notify's level icons)
-    timestamps = false, -- prefix each message with its capture time
-    time_format = "%H:%M:%S",
-
     -- Routing: which message kinds land in the zone (folded into notify's ext_kinds when enabled).
-    -- "zone" = the styled history view (clean tinted lines; the filter bar appears when focused).
+    -- "zone" renders through lvim-hud notify's styled history view (clean tinted lines with per-level icons;
+    -- the filter bar appears when the zone is focused) — one consistent message panel.
     kinds = {
         lua_error = "zone",
         emsg = "zone",

@@ -3,8 +3,10 @@
 --
 -- It is NOT a second `vim.ui_attach` and does NOT patch any Neovim internals (unlike msgarea.nvim).
 -- The notify hub is the single `ext_messages` owner; it captures / de-dups / levels every message and
--- routes by kind to a behaviour. This module registers a "msgarea" SINK with that hub and renders
--- whatever is routed to it into a window IT owns — so it inherits all of notify's message handling.
+-- routes by kind to a behaviour. Messages routed to the "zone" behaviour render through notify's styled
+-- history view IN a window THIS module owns (the docked zone) — so they inherit all of notify's handling
+-- (dedup, levels, icons, the filter bar on focus). The zone is a vertical stack of named SEGMENTS
+-- (history, cmdline, completion, hosted docks) laid out by priority.
 --
 -- Height: `max_height` is the only hard rule. `auto_resize` (toggleable) fits the panel to its
 -- content up to that cap (5 rows -> 5 tall, 12 rows -> pinned to the cap and scrolling); off = a
@@ -13,10 +15,7 @@
 ---@module "lvim-msgarea"
 
 local api = vim.api
-local levels = vim.log.levels
 local status = require("lvim-hud.chrome.overlay")
--- notify's live config (lvim-hud) — read for the level icons so the zone's icons stay in sync with notify.
-local notify_config = require("lvim-hud.config").notify
 local merge = require("lvim-utils.utils").merge
 
 --- Publish the completion match counter to the statusline — but ONLY when a transient action already owns
@@ -37,16 +36,8 @@ local M = {}
 -- `M.host_window`, so two hosts never collide on a segment name.
 local host_seq = 0
 
----@class LvimMsgAreaMsg
----@field text string
----@field level integer
----@field count integer
----@field ts integer
-
 ---@type table  the live config (lvim-msgarea.config), merged in place by setup()
 local cfg = require("lvim-msgarea.config")
----@type LvimMsgAreaMsg[]  the scrollback ring buffer
-local ring = {}
 ---@type integer? autocmd group
 local augroup = nil
 ---@type integer  non-reserve line count of the last render (exported to cmdline_host)
@@ -107,16 +98,6 @@ local cursor_au = nil
 ---@type string[]  surface-panel keymap lhs's installed for focused interaction (cleared on blur)
 local interaction_keys = {}
 
--- level → { LvimUiMsg<Name> highlight suffix, notify icon key }.
----@type table<integer, { name: string, icon: string }>
-local LEVEL = {
-    [levels.ERROR] = { name = "Error", icon = "error" },
-    [levels.WARN] = { name = "Warn", icon = "warn" },
-    [levels.INFO] = { name = "Info", icon = "info" },
-    [levels.DEBUG] = { name = "Debug", icon = "debug" },
-    [levels.TRACE] = { name = "Debug", icon = "trace" },
-}
-
 -- ─── helpers ──────────────────────────────────────────────────────────────────
 
 --- Resolve a height value: >= 1 = absolute lines, < 1 = a fraction of `vim.o.lines`.
@@ -144,19 +125,6 @@ local function area_cap()
     return type(h) == "number" and resolve(h) or nil
 end
 
---- The notify level icon for `level` (read live from notify's config, so they stay in sync).
----@param level integer
----@return string
-local function level_icon(level)
-    if not cfg.icons then
-        return ""
-    end
-    local key = (LEVEL[level] or LEVEL[levels.INFO]).icon
-    local icons = (notify_config or {}).icons or {}
-    local ic = icons[key]
-    return ic and (ic .. " ") or ""
-end
-
 --- Truncate `s` to at most `maxw` display columns, adding `…` when cut.
 ---@param s string
 ---@param maxw integer
@@ -168,16 +136,20 @@ local function trunc(s, maxw)
     if vim.fn.strdisplaywidth(s) <= maxw then
         return s
     end
-    local acc, cur = {}, 0
-    for _, ch in ipairs(vim.fn.split(s, "\\zs")) do
-        local cw = vim.fn.strdisplaywidth(ch)
-        if cur + cw > maxw - 1 then
-            break
+    -- Binary-search the char count that fits `maxw - 1` columns (room for the ellipsis) — O(log n)
+    -- strdisplaywidth calls instead of the old per-grapheme `split(s, "\zs")` + width-per-char scan (which
+    -- allocated an N-element VimL list and crossed the boundary N times on this per-cell render hot path).
+    local target = maxw - 1
+    local lo, hi = 0, vim.fn.strchars(s)
+    while lo < hi do
+        local mid = math.floor((lo + hi + 1) / 2)
+        if vim.fn.strdisplaywidth(vim.fn.strcharpart(s, 0, mid)) <= target then
+            lo = mid
+        else
+            hi = mid - 1
         end
-        acc[#acc + 1] = ch
-        cur = cur + cw
     end
-    return table.concat(acc) .. "…"
+    return vim.fn.strcharpart(s, 0, lo) .. "…"
 end
 
 --- One completion cell: ` icon label ` — a 1-column leading space, the kind icon, the label, then padded
@@ -337,25 +309,6 @@ local function render_grid(seg)
         end
     end
     return lines, hls, sel_local
-end
-
---- Rebuild the built-in `messages` segment's lines from the scrollback ring (icon badge + text +
---- per-level whole-row highlight). Called by the notify sink and on clear.
-local function refresh_messages()
-    local s = seg_get("messages", { kind = "lines", priority = 10 })
-    local lines, hls = {}, {}
-    for _, m in ipairs(ring) do
-        local prefix = cfg.timestamps and (os.date(cfg.time_format or "%H:%M:%S", m.ts) .. " ") or ""
-        local suffix = (m.count > 1) and ("  (x" .. m.count .. ")") or ""
-        local body = prefix .. level_icon(m.level) .. m.text .. suffix
-        local name = "LvimUiMsg" .. (LEVEL[m.level] or LEVEL[levels.INFO]).name
-        for _, ln in ipairs(vim.split(body, "\n", { plain = true })) do
-            lines[#lines + 1] = ln
-            hls[#hls + 1] = name
-        end
-    end
-    s.lines = lines
-    s.hls = hls
 end
 
 -- ─── compose / sizing ─────────────────────────────────────────────────────────
@@ -622,7 +575,7 @@ local function refresh_surface()
     -- cmdline events — else completion lands a cursor-blink late) or a HOSTED float (it repositioned, and the
     -- coalesced reflow above must now paint as a single frame).
     if hosted or vim.fn.mode():sub(1, 1) == "c" then
-        pcall(api.nvim__redraw, { flush = true })
+            pcall(api.nvim__redraw, { flush = true })
     end
 end
 
@@ -646,31 +599,6 @@ local function update_visibility()
     end
 end
 
--- ─── sink ─────────────────────────────────────────────────────────────────────
-
---- The notify "msgarea" sink: append a routed message and refresh.
----@param text string
----@param level integer
-local function on_message(text, level)
-    if not cfg.enable or type(text) ~= "string" or text == "" then
-        return
-    end
-    level = level or levels.INFO
-    local last = ring[#ring]
-    if cfg.dedup ~= false and last and last.text == text and last.level == level then
-        last.count = last.count + 1
-        last.ts = os.time()
-    else
-        ring[#ring + 1] = { text = text, level = level, count = 1, ts = os.time() }
-        local cap = cfg.scrollback or 500
-        while #ring > cap do
-            table.remove(ring, 1)
-        end
-    end
-    refresh_messages()
-    update_visibility()
-end
-
 -- ─── window-nav integration ─────────────────────────────────────────────────
 -- The zone behaves as the window "below" the editor, but WITHOUT overriding any global window command: it
 -- exposes `M.focus_content()` (descend) + the zone panel binds `<C-w>k`/`<C-k>` → blur (escape up, BUFFER-
@@ -684,7 +612,6 @@ function M.enable()
     cfg.enable = true
     require("lvim-msgarea.integrations").setup(cfg)
     local notify = require("lvim-hud.notify")
-    notify.register_sink("msgarea", on_message)
     notify.route_kinds(cfg.kinds or {})
 
     if augroup then
@@ -743,9 +670,8 @@ function M.enable()
         end,
     })
 
-    -- The zone is HIDDEN while empty; it appears only when there is something to show (a message, the
-    -- unified cmdline, or a completion list). Rebuild the messages segment from any retained scrollback.
-    refresh_messages()
+    -- The zone is HIDDEN while empty; it appears only when there is something to show (a message routed to
+    -- the "zone" behaviour, the unified cmdline, or a completion list).
     update_visibility()
 end
 
@@ -755,7 +681,6 @@ function M.disable()
     require("lvim-msgarea.integrations").teardown()
     local notify = require("lvim-hud.notify")
     notify.unroute_kinds(vim.tbl_keys(cfg.kinds or {}))
-    notify.register_sink("msgarea", nil)
     if augroup then
         pcall(api.nvim_del_augroup_by_id, augroup)
         augroup = nil
@@ -887,13 +812,6 @@ function M.clear_completion()
     publish_completion_count(nil, nil) -- reset the counter (the cmdline mode stays until it closes)
 end
 
---- Wipe the scrollback and reflow (hides the zone if nothing else remains).
-function M.clear()
-    ring = {}
-    refresh_messages()
-    update_visibility()
-end
-
 --- Open a NAVIGATOR (Vertico/Consult-style: a filter input + a results list + an optional live preview)
 --- through the bottom AREA — the Emacs-minibuffer model: a selectable list IN the message-area space (not a
 --- centred float). Delegates to the picker on ui.surface with the bottom "area" layout; `opts` is the
@@ -934,7 +852,7 @@ function M.handoff(fn)
         -- freeze the screen between commands. Surface the reflow error only when `fn` itself succeeded.
         local ok2, err2 = pcall(update_visibility) -- the SINGLE coalesced reflow for both release and reserve
         vim.o.lazyredraw = lz
-        pcall(api.nvim__redraw, { flush = true }) -- paint the swapped zone as one clean frame
+            pcall(api.nvim__redraw, { flush = true }) -- paint the swapped zone as one clean frame
         if ok and not ok2 then
             ok, err = ok2, err2
         end
@@ -950,14 +868,6 @@ end
 ---@return boolean
 function M.is_focused(name)
     return active_name ~= nil and (name == nil or active_name == name)
-end
-
---- True when the messages segment currently holds content — so a hosted finder knows there is something
---- BELOW it to descend into (and only then focuses the zone).
----@return boolean
-function M.has_messages()
-    local s = by_name["messages"]
-    return s ~= nil and s.lines ~= nil and #s.lines > 0
 end
 
 ---@type (fun(): boolean)?  a registered DESCEND FALLBACK — tried when the zone itself has nothing to descend
@@ -1074,8 +984,10 @@ function Handle:provider(fn)
 end
 
 --- RESERVE `height` blank rows for an external float to overlay; returns the editor-relative rect of the
---- reserved region (positioned by the segment's priority). `on_rect` (optional) is called with the NEW rect
---- whenever the zone reflows (messages appear/clear, resize), so the float can follow. The `reserve` kind.
+--- reserved region (positioned by the segment's priority). `on_rect` is AUTHORITATIVE — it is called with the
+--- NEW rect whenever the zone reflows (messages appear/clear, resize) so the float can follow; passing nil
+--- CLEARS a previously registered callback (rather than silently keeping a stale closure). Use
+--- `Handle:on_rect(fn)` to change it without re-reserving. The `reserve` kind.
 ---@param height integer
 ---@param on_rect? fun(rect: { win: integer, row: integer, col: integer, width: integer, height: integer }?)
 ---@param rows? integer  number of STACKED panel rows the float lays out (default 1); the dock is clamped to
@@ -1094,9 +1006,20 @@ function Handle:reserve(height, on_rect, rows)
     -- preview-first), falling back to the msgarea `max_height * rows` only when the shared config is absent.
     local cap = area_cap() or ((resolve(cfg.max_height) or 10) * math.max(1, rows or 1))
     s.height = math.max(0, math.min(height or 0, cap))
-    s.on_rect = on_rect or s.on_rect
+    -- Authoritative: the passed callback (or nil) IS the new on_rect. A previous `on_rect or s.on_rect` kept a
+    -- STALE closure whenever a consumer re-reserved without one — with no way to clear it.
+    s.on_rect = on_rect
     update_visibility()
     return segment_rect(s)
+end
+
+--- Set (or clear with nil) the reflow callback for a `reserve` segment WITHOUT re-reserving — the explicit
+--- counterpart to the authoritative `reserve` arg (e.g. to swap the closure a hosted float follows).
+---@param fn? fun(rect: { win: integer, row: integer, col: integer, width: integer, height: integer }?)
+---@return LvimMsgAreaHandle
+function Handle:on_rect(fn)
+    seg_get(self.name).on_rect = fn
+    return self
 end
 
 --- Empty the segment's content (keep it registered) and reflow.
@@ -1435,6 +1358,28 @@ function M.zone_win()
     return nil
 end
 
+--- The 0-based index into segment `name`'s CONTENT lines that the cursor currently sits on — derived from the
+--- tracked `active_row` (cursor buffer row) and the segment's composed `line_offset` (where its content starts,
+--- below its title). Returns nil when the zone is unfocused or the cursor is outside that segment's content, so
+--- a consumer can act on the row/message under the cursor (e.g. the history's delete-current).
+---@param name string
+---@return integer?
+function M.content_row(name)
+    if active_row == nil then
+        return nil
+    end
+    local s = by_name[name]
+    if not (s and s.line_offset ~= nil) then
+        return nil
+    end
+    local idx = active_row - s.line_offset
+    local n = s._drawn or (s.lines and #s.lines) or 0
+    if idx < 0 or idx >= n then
+        return nil
+    end
+    return idx
+end
+
 function M.zone_width()
     if surf_panel and surf_panel.win and api.nvim_win_is_valid(surf_panel.win) then
         return api.nvim_win_get_width(surf_panel.win)
@@ -1708,27 +1653,13 @@ end
 
 --- Leave focused interaction: drop the interaction keymaps and return focus to the previous window (the
 --- zone stays open). An `on_confirm` that opens something should call this first.
---- Walk UP out of the messages INTO the dock hosted above them (a calendar / finder / terminal in the zone),
---- landing on its LAST sector — its footer bar — so the chain is symmetric with the descend. Returns false
---- when nothing is hosted above (the caller then leaves the zone).
----@return boolean
-function M.ascend()
-    for _, s in ipairs(segments) do
-        if s.kind == "reserve" and s.on_ascend and (s.height or 0) > 0 then
-            local ok = s.on_ascend()
-            if ok ~= false then
-                remove_interaction()
-                active_row, active_name, bar_focused = nil, nil, false
-                return true
-            end
-        end
-    end
-    return false
-end
-
----@param opts? { keep_focus?: boolean }  keep_focus: focus already moved elsewhere (a click) — do not pull it back
-function M.blur(opts)
-    local s = active_seg() -- capture before clearing, to fire its on_blur (e.g. restore the statusline)
+--- Shared teardown when focus LEAVES the active segment — via blur (down/out to the editor) OR ascend (up
+--- into a dock hosted above). Drops the interaction keymaps + the cursor autocmd, clears the focus state, and
+--- fires the segment's `on_blur` (e.g. the hud history's: resume its paused countdowns + restore the
+--- statusline it published). Does NOT touch `prev_win` / focus / visibility — those differ between the two
+--- callers (blur restores prev_win + reflows; ascend leaves focus where on_ascend just moved it).
+local function deactivate()
+    local s = active_seg() -- capture before clearing, so on_blur sees the still-active segment
     remove_interaction()
     if cursor_au then
         pcall(api.nvim_del_autocmd, cursor_au)
@@ -1740,6 +1671,32 @@ function M.blur(opts)
     if s and s.on_blur then
         pcall(s.on_blur)
     end
+end
+
+--- Walk UP out of the messages INTO the dock hosted above them (a calendar / finder / terminal in the zone),
+--- landing on its LAST sector — its footer bar — so the chain is symmetric with the descend. Returns false
+--- when nothing is hosted above (the caller then leaves the zone).
+---@return boolean
+function M.ascend()
+    for _, s in ipairs(segments) do
+        if s.kind == "reserve" and s.on_ascend and (s.height or 0) > 0 then
+            local ok = s.on_ascend()
+            if ok ~= false then
+                -- Full teardown (incl. on_blur), same as blur: an ascend that only cleared active_name +
+                -- interaction (as before) would skip the segment's on_blur, so the hud history's countdowns
+                -- would stay paused forever (messages never expire again). Focus is already up in the hosted
+                -- float — do NOT restore prev_win (that is blur's job).
+                deactivate()
+                return true
+            end
+        end
+    end
+    return false
+end
+
+---@param opts? { keep_focus?: boolean }  keep_focus: focus already moved elsewhere (a click) — do not pull it back
+function M.blur(opts)
+    deactivate()
     if not (opts and opts.keep_focus) and prev_win and api.nvim_win_is_valid(prev_win) then
         pcall(api.nvim_set_current_win, prev_win)
     end
@@ -1871,6 +1828,7 @@ function M.setup(user_cfg)
         bar_focused = M.bar_focused,
         zone_width = M.zone_width,
         zone_win = M.zone_win, -- the panel window: the history owner keeps the reader's place across a repaint
+        content_row = M.content_row, -- the segment-content line under the cursor (for the history delete-current)
         blur = M.blur,
     })
 end

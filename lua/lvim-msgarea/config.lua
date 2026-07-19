@@ -14,15 +14,10 @@
 ---@field min_height         number   Floor while auto-resizing
 ---@field focusable          boolean  The zone can be focused (to scroll / interact) — never auto-focused
 ---@field unified            boolean  Draw the cmdline (`:` `/` `?`) at the bottom of the zone (Emacs minibuffer)
----@field scrollback         integer  Max retained message lines (ring buffer)
 ---@field completion_max     integer  Max intercepted completion rows shown at once
 ---@field completion_columns integer  Completion grid columns (1 = list; 2/3/4… = row-major grid)
 ---@field completion_hidden  boolean  (native) include hidden dotfiles/folders in file/dir completion
 ---@field completion_keys    table    (native) command-line keymaps driving the completion grid (action → keys)
----@field dedup              boolean  Collapse a repeated consecutive message into "message  (xN)"
----@field icons              boolean  A per-level icon badge (reuses notify's level icons)
----@field timestamps         boolean  Prefix each message with its capture time
----@field time_format        string   os.date format for the timestamp prefix
 ---@field kinds              table<string, string>  Which message kinds land in the zone ("zone")
 ---@field integrations       table    Per-source opt-in glue (blink / native completion docks)
 
@@ -59,7 +54,6 @@ return {
     unified = false,
 
     -- ── Content ─────────────────────────────────────────────────────────────────────────────────
-    scrollback = 500, -- max retained message lines (ring buffer; oldest dropped)
     completion_max = 12, -- max intercepted completion ROWS shown at once (windowed around the selection)
     completion_columns = 1, -- grid columns: 1 = a list; 2/3/4… = a row-major grid (navigated by the grid)
     completion_hidden = true, -- (native integration) include hidden dotfiles/folders in file/dir completion
@@ -78,15 +72,10 @@ return {
         drill_out = { "<S-Tab>" }, -- go back up a path segment
         enter = { "<CR>" }, -- complete the selection first (so a partial/ambiguous command is filled, not run), then execute
     },
-    dedup = true, -- collapse a repeated consecutive message into "message  (xN)"
-    icons = true, -- a per-level icon badge (reuses notify's level icons)
-    timestamps = false, -- prefix each message with its capture time
-    time_format = "%H:%M:%S",
-
     -- ── Routing ─────────────────────────────────────────────────────────────────────────────────
     -- Which message KINDS land in the zone. Folded into notify's `ext_kinds` when enabled (and restored on
-    -- disable). "zone" renders them in the STYLED history view (clean tinted lines; the filter bar appears when
-    -- focused) — one consistent message panel. ("msgarea" is the older BARE display, no bar.)
+    -- disable). "zone" renders them through lvim-hud notify's STYLED history view (clean tinted lines with
+    -- per-level icons; the filter bar appears when the zone is focused) — one consistent message panel.
     kinds = {
         lua_error = "zone",
         emsg = "zone",
