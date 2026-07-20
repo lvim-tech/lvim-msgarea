@@ -17,6 +17,7 @@
 local api = vim.api
 local status = require("lvim-hud.chrome.overlay")
 local merge = require("lvim-utils.utils").merge
+local uibar = require("lvim-ui.bar")
 
 --- Publish the completion match counter to the statusline — but ONLY when a transient action already owns
 --- it (the cmdline published its mode), so this never activates the line on its own (it respects the
@@ -354,17 +355,40 @@ local function compose()
         s._drawn = #seg_lines
 
         -- 2) a title header row above the content (only when the segment actually has content, never a reserve).
-        -- `title_hls` (a span list) styles it per-cell — e.g. the history's coloured filter-bar badges; else the
-        -- whole row is the plain title tint. `title_when_focused` hides it unless this segment is FOCUSED — so
-        -- the messages read as clean tinted lines passively, and the filter bar appears only while browsing.
+        -- `title_when_focused` hides it unless this segment is FOCUSED — so the messages read as clean tinted
+        -- lines passively, and e.g. the history's filter bar appears only while browsing.
+        --
+        -- A zone stacks N segments, each with its own title INTERLEAVED with the content, so these rows can
+        -- never be the surface's frame chrome — but they are the same BAND, so they are built by the same
+        -- `ui.bar.title_band` the surface's chrome bands use: two-depth strip (deeper while this segment is
+        -- the ACTIVE one), fg-only uppercase title over it, the zone's own title tint rather than the peek
+        -- one. `title_hls` stays the escape hatch for a segment that renders its own row wholesale (lvim-hud's
+        -- filter bar — itself a `title_band` call, with the level badges as its items).
         if
             s.title
             and #seg_lines > 0
             and s.kind ~= "reserve"
             and (not s.title_when_focused or active_name == s.name)
         then
-            lines[#lines + 1] = s.title_hls and s.title or (" " .. s.title)
-            hls[#hls + 1] = s.title_hls or "LvimUiMsgAreaTitle"
+            if s.title_hls then
+                lines[#lines + 1] = s.title
+                hls[#hls + 1] = s.title_hls
+            else
+                local band = uibar.title_band({
+                    text = s.title,
+                    width = M.zone_width(),
+                    focused = active_name == s.name,
+                    fill_hl = "LvimUiMsgAreaTitleFill",
+                    fill_hl_focus = "LvimUiMsgAreaTitleFillHover",
+                    text_hl = "LvimUiMsgAreaTitleText",
+                })
+                lines[#lines + 1] = band.line
+                local spans = { { eol = true, hl = band.fill, priority = 1 } }
+                for _, sp in ipairs(band.spans) do
+                    spans[#spans + 1] = { c0 = sp[1], c1 = sp[2], hl = sp[3], priority = 100 }
+                end
+                hls[#hls + 1] = spans
+            end
         end
 
         -- 3) append, offsetting the segment's selected row into the buffer
@@ -575,7 +599,7 @@ local function refresh_surface()
     -- cmdline events — else completion lands a cursor-blink late) or a HOSTED float (it repositioned, and the
     -- coalesced reflow above must now paint as a single frame).
     if hosted or vim.fn.mode():sub(1, 1) == "c" then
-            pcall(api.nvim__redraw, { flush = true })
+        pcall(api.nvim__redraw, { flush = true })
     end
 end
 
@@ -852,7 +876,7 @@ function M.handoff(fn)
         -- freeze the screen between commands. Surface the reflow error only when `fn` itself succeeded.
         local ok2, err2 = pcall(update_visibility) -- the SINGLE coalesced reflow for both release and reserve
         vim.o.lazyredraw = lz
-            pcall(api.nvim__redraw, { flush = true }) -- paint the swapped zone as one clean frame
+        pcall(api.nvim__redraw, { flush = true }) -- paint the swapped zone as one clean frame
         if ok and not ok2 then
             ok, err = ok2, err2
         end
