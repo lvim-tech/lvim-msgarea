@@ -146,12 +146,17 @@ local function refresh()
             m.clear_completion()
             return
         end
-        -- Preselect the best match ONLY while a token is being TYPED (so <CR> completes a partial command /
-        -- option, e.g. `:LvimPick`→`LvimPicker`). After a SPACE (the token is empty — the previous word is
-        -- finished and the next arg is OPTIONAL, e.g. `:LvimInstaller ` offering its subcommands) preselect
-        -- NOTHING, so <CR> runs the bare command instead of auto-accepting the first subcommand. <Tab> still
-        -- selects from here either way.
-        sel = (token == "") and 0 or 1
+        -- Preselect the best match ONLY while a fragment is being TYPED (so <CR> completes a partial command
+        -- / option, e.g. `:LvimPick`→`LvimPicker`). The test is `fz` — what is left to complete — not the
+        -- whole token, because a token can be COMPLETE while still having candidates under it:
+        --   `:LvimInstaller ` → token "" → its subcommands are offered, <CR> runs the bare command
+        --   `:e ~/.config/`   → token "~/.config/", fz "" → its ENTRIES are offered, <CR> opens the directory
+        -- Keying on the token made the second case preselect the first entry, so <CR> on a finished directory
+        -- silently descended into it (`:e ~/.config/` became `:e ~/.config/Android Open Source Project/`, and
+        -- an lvim-space "Project path" gained a subdirectory the user never asked for). A trailing separator
+        -- means the path so far IS the answer; the list below it is a convenience, not a pending choice.
+        -- <Tab> still selects from here either way.
+        sel = (fz == "") and 0 or 1
         m.set_completion(items, sel)
     end)
 end
