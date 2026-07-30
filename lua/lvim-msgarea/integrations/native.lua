@@ -41,10 +41,25 @@ local function grid_opts()
     return mc.completion_columns or 1, mc.completion_max
 end
 
---- True while a `:` command line is active (the only context we mirror — search / insert are left native).
+--- True while a command line we mirror is active: a `:` command, or a `vim.fn.input()` PROMPT that declares
+--- a completion kind. Search / insert are left native.
+--- The prompt case is why `:e ~/co<Tab>` listed candidates while an lvim-space "Project path" field looked
+--- dead: the value completes natively either way, but with nothing rendered there is no sign it did, and no
+--- grid to step through. Neovim reports a prompt's kind through `getcmdcompltype()` ("dir", "file", …), so
+--- the same mirror works for both.
 ---@return boolean
 local function in_cmd()
-    return vim.fn.getcmdtype() == ":"
+    local t = vim.fn.getcmdtype()
+    if t == ":" then
+        return true
+    end
+    return t == "@" and vim.fn.getcmdcompltype() ~= ""
+end
+
+--- True while the active command line is an input() PROMPT (as opposed to a `:` command).
+---@return boolean
+local function in_prompt()
+    return vim.fn.getcmdtype() == "@"
 end
 
 --- Recompute the native completion candidates for the current command line, FUZZY-rank them, and render
@@ -71,13 +86,23 @@ local function refresh()
         m.clear_completion()
         return
     end
-    local stem, token = line:match("^(.*%s)(%S*)$")
-    if not stem then
+    -- A PROMPT has no command word in front of the value, and a path may legitimately contain spaces
+    -- ("nvim (another copy)"), so the whole line is the token there. A `:` line splits at the last space.
+    local prompt = in_prompt()
+    local stem, token
+    if prompt then
         stem, token = "", line
+    else
+        stem, token = line:match("^(.*%s)(%S*)$")
+        if not stem then
+            stem, token = "", line
+        end
     end
     local bprefix = token:match("^(.*/)") or "" -- the path-prefix (dir) of the token; "" for a command/option
     local fz = token:sub(#bprefix + 1) -- the part fuzzy-matched against the broadened candidates
-    local ok, cands = pcall(vim.fn.getcompletion, stem .. bprefix, "cmdline")
+    -- `cmdline` resolves a whole `:` line (command + args); a prompt has no command, so ask for its own kind.
+    local kind = prompt and vim.fn.getcmdcompltype() or "cmdline"
+    local ok, cands = pcall(vim.fn.getcompletion, stem .. bprefix, kind)
     if not ok or not cands then
         cands = {}
     end
@@ -87,7 +112,7 @@ local function refresh()
     local mc = config or {}
     local ctype = vim.fn.getcmdcompltype()
     if mc.completion_hidden ~= false and (ctype:find("file") or ctype:find("dir")) then
-        local okh, hidden = pcall(vim.fn.getcompletion, stem .. bprefix .. ".", "cmdline")
+        local okh, hidden = pcall(vim.fn.getcompletion, stem .. bprefix .. ".", kind)
         if okh and hidden then
             for _, h in ipairs(hidden) do
                 local base = h:match("[^/]*/?$")
@@ -205,7 +230,9 @@ function M.accept()
     end
     local cand = items[sel].full or items[sel].text -- the FULL candidate (path), not the basename display
     local line = vim.fn.getcmdline()
-    local stem = line:match("^(.*%s)%S*$") or "" -- everything up to & incl. the last space (empty = no space)
+    -- A prompt's whole line is the value (paths may contain spaces); a `:` line keeps everything up to and
+    -- including the last space. Must match how `refresh` split the token, or accept writes a mangled line.
+    local stem = in_prompt() and "" or (line:match("^(.*%s)%S*$") or "")
     pcall(vim.fn.setcmdline, stem .. cand)
     return true
 end
@@ -258,13 +285,45 @@ local mapped_keys = {}
 --- install so `remove_keys` can restore it verbatim instead of leaving the lhs unmapped.
 local saved_maps = {}
 
+--- <C-z>: the conventional 'wildcharm' — a key with no meaning as command-line text.
+local WILDCHARM = 26
+
+--- Make 'wildcharm' available for the fall-through below. MUST run when the maps are INSTALLED, not on the
+--- first keypress: setting it from inside the expr map is too late for the very key that triggered it (the
+--- first <Tab> in a prompt was swallowed and only the second completed — measured), because the returned
+--- <C-z> is processed against the value in force before the mapping ran.
+local function ensure_wildcharm()
+    if vim.o.wildcharm == 0 then
+        vim.o.wildcharm = WILDCHARM
+    end
+end
+
+--- The fall-through key for an lhs that is the 'wildchar'. Returning the literal key from an expr map does
+--- NOT complete: 'wildchar' is recognised as it is TYPED, before mappings, so a `<Tab>` handed back by a
+--- mapping is inserted as a plain character and native completion never runs. 'wildcharm' exists for exactly
+--- this — it is the character that DOES trigger completion from inside a mapping, so return that instead.
+--- Without this, every command-line completion that our own grid does not drive is dead: a `vim.fn.input()`
+--- prompt with a `completion` kind (an lvim-space "Project path" field, say) swallowed <Tab> and typed a
+--- literal tab instead of completing the path.
+---@param lhs string
+---@return string  the termcodes to return from the expr map
+local function fallthrough(lhs)
+    local key = api.nvim_replace_termcodes(lhs, true, false, true)
+    if key == api.nvim_replace_termcodes(vim.fn.nr2char(vim.o.wildchar), true, false, true) then
+        return api.nvim_replace_termcodes("<C-z>", true, false, true)
+    end
+    return key
+end
+
 --- Install the command-line keymaps from `config.completion_keys`. Each runs as an EXPR map so it
 --- can decide consume-vs-fall-through: when a menu is open it SCHEDULES the action (the move/accept changes
---- the zone's window+buffer — forbidden under the expr textlock, E565) and consumes the key; otherwise the
---- key falls through to its native cmdline behaviour. Any user cmdline mapping the lhs already had is
---- snapshotted first (and restored on disable), so an enable/disable cycle never destroys a `cnoremap`.
+--- the zone's window+buffer — forbidden under the expr textlock, E565) and otherwise the key falls through
+--- to its native cmdline behaviour (see `fallthrough` for why 'wildchar' needs 'wildcharm' to do that). Any
+--- user cmdline mapping the lhs already had is snapshotted first (and restored on disable), so an
+--- enable/disable cycle never destroys a `cnoremap`.
 local function install_keys()
     local keys = (config or {}).completion_keys or {}
+    ensure_wildcharm()
     for action, method in pairs(KEY_ACTIONS) do
         for _, lhs in ipairs(keys[action] or {}) do
             if saved_maps[lhs] == nil then
@@ -280,7 +339,7 @@ local function install_keys()
                         vim.schedule(M.accept)
                         return ""
                     end
-                    return api.nvim_replace_termcodes(lhs, true, false, true)
+                    return fallthrough(lhs)
                 end
                 if M.has_menu() then
                     vim.schedule(function()
@@ -288,7 +347,7 @@ local function install_keys()
                     end)
                     return ""
                 end
-                return api.nvim_replace_termcodes(lhs, true, false, true)
+                return fallthrough(lhs)
             end, { expr = true, silent = true })
             mapped_keys[#mapped_keys + 1] = lhs
         end
