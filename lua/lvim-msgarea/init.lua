@@ -425,7 +425,13 @@ local function to_surface_hls(hls)
             out[#out + 1] = { i - 1, 0, -1, g, 200 }
         elseif type(g) == "table" then
             for _, sp in ipairs(g) do
-                out[#out + 1] = { i - 1, sp.eol and 0 or sp.c0, sp.eol and -1 or sp.c1, sp.hl, sp.priority or 200 }
+                if sp.virt then
+                    -- A right-edge VIRTUAL cell (a message's countdown circle): passed through by name, so
+                    -- it stays chrome — one fixed column, and never part of a yank of the row.
+                    out[#out + 1] = { row = i - 1, virt = sp.virt, hl = sp.hl, priority = sp.priority or 300 }
+                else
+                    out[#out + 1] = { i - 1, sp.eol and 0 or sp.c0, sp.eol and -1 or sp.c1, sp.hl, sp.priority or 200 }
+                end
             end
         end
     end
