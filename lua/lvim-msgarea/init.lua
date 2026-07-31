@@ -318,11 +318,15 @@ end
 --- `false`), the non-reserve line count, and the selected buffer row. NO buffer writes — consumed by the
 --- ui.surface zone provider (`open_surface`), which renders lines + converts the hls.
 ---@return string[] lines, table hls, integer content_lines, integer? sel_row
+---@type any[]  the composed buffer's per-row ITEM ids (see Handle:set `groups`); rebuilt by compose()
+local composed_groups = {}
+
 local function compose()
     -- Walk the stack in priority order (messages → completion grid → … → cmdline reserve). Each segment
     -- contributes lines + a parallel `hls` entry per line (a whole-row hl name, a span list, or `false`
     -- for no highlight). Reserve segments contribute blank rows for an external float to overlay.
     local lines, hls = {}, {}
+    composed_groups = {}
     local reserved_total, sel_row = 0, nil
     for _, s in ipairs(segments) do
         -- 1) gather this segment's own lines + hls (+ grid selection)
@@ -397,6 +401,10 @@ local function compose()
         for i = 1, #seg_lines do
             lines[#lines + 1] = seg_lines[i]
             hls[#hls + 1] = seg_hls[i]
+            -- The row's ITEM id, namespaced by segment so two segments' ids can never collide.
+            composed_groups[#lines] = (s.kind == "lines" and s.groups and s.groups[i] ~= nil)
+                    and (s.name .. ":" .. tostring(s.groups[i]))
+                or nil
         end
         if sel_local then
             sel_row = base + sel_local
@@ -482,6 +490,9 @@ local function open_surface()
                     border = "none", -- the zone fills the cmdline region edge-to-edge (a default block is rounded)
                     provider = {
                         hide_cursor = true, -- hide the hardware cursor while the zone is the focused window
+                        -- The zone's OWN Visual: every row already carries a tint, and the editor's near-bg
+                        -- selection wash disappears against them — you could not see what you had marked.
+                        visual_hl = "LvimUiMsgAreaVisual",
                         size = function()
                             local lines, _, content_count = compose()
                             local reserved = #lines - content_count -- host + cmdline reserve rows
@@ -508,9 +519,48 @@ local function open_surface()
                             -- the hardware cursor is hidden — but ONLY when the CONTENT is focused. While the
                             -- filter BAR sub-sector is focused (`bar_focused`) the bar's own button hover marks
                             -- the position, so the message rows stay calm.
+                            -- EMPHASIS spans the whole ITEM, the cursor tint only its row. A wrapped
+                            -- message is one thing the reader is on; bolding a single row of it splits it
+                            -- in two, and the row that happens to carry the cursor is not "the message".
+                            local gid = (active_name and not bar_focused and active_row)
+                                and composed_groups[active_row + 1]
+                            if gid then
+                                for r, g in pairs(composed_groups) do
+                                    if g == gid and r ~= (active_row + 1) then
+                                        local e = hls[r]
+                                        local spans = (type(e) == "table") and vim.deepcopy(e)
+                                            or (type(e) == "string" and { { eol = true, hl = e, priority = 10 } })
+                                            or {}
+                                        spans[#spans + 1] =
+                                            { eol = true, hl = "LvimUiMsgAreaItemFocus", priority = 300 }
+                                        hls[r] = spans
+                                    end
+                                end
+                            end
                             local base = active_name and not bar_focused and active_row and hls[active_row + 1]
                             if type(base) == "string" and base:match("^LvimUiMsg") and not base:match("Sel$") then
                                 hls[active_row + 1] = base .. "Sel"
+                            elseif type(base) == "table" then
+                                -- The same boost for a row given as SPANS. A segment that paints cells inside
+                                -- its row (a message's icon+time badge) has to describe the row as a span list,
+                                -- and testing only for a string silently dropped the focused-row tint for it —
+                                -- the one thing that must be unmistakable while the hardware cursor is hidden.
+                                -- Only the row-wide (`eol`) span is boosted; the inner cells keep their own.
+                                local boosted = {}
+                                for i, sp in ipairs(base) do
+                                    local hl = sp.hl
+                                    if
+                                        sp.eol
+                                        and type(hl) == "string"
+                                        and hl:match("^LvimUiMsg")
+                                        and not hl:match("Sel$")
+                                    then
+                                        boosted[i] = vim.tbl_extend("force", sp, { hl = hl .. "Sel" })
+                                    else
+                                        boosted[i] = sp
+                                    end
+                                end
+                                hls[active_row + 1] = boosted
                             end
                             return lines, to_surface_hls(hls)
                         end,
@@ -954,15 +1004,20 @@ local Handle = {}
 Handle.__index = Handle
 
 --- Set plain content: `lines` + a parallel `hls` (each entry a whole-row hl name, a span list
---- `{ { c0, c1, hl, priority?, eol? }, … }`, or nil). Switches the segment to the `lines` kind.
+--- `{ { c0, c1, hl, priority?, eol? }, … }`, or nil), and optionally `groups` — a parallel array of ITEM
+--- ids saying which logical item each row belongs to. A wrapped message occupies several rows; the id is
+--- what lets the focused item read as ONE thing (its whole text emphasised) while only the row under the
+--- cursor carries the cursor tint. Switches the segment to the `lines` kind.
 ---@param lines string[]
 ---@param hls? table
+---@param groups? any[]
 ---@return LvimMsgAreaHandle
-function Handle:set(lines, hls)
+function Handle:set(lines, hls, groups)
     local s = seg_get(self.name)
     s.kind = "lines"
     s.lines = lines or {}
     s.hls = hls or {}
+    s.groups = groups
     update_visibility()
     return self
 end
