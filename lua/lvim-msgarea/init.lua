@@ -60,6 +60,7 @@ local batch_depth = 0
 ---@field kind "lines"|"grid"|"reserve"|"provider"
 ---@field lines? string[]  (lines kind) pre-built content lines
 ---@field hls? table  (lines kind) parallel to `lines`: a whole-row hl name OR a span list
+---@field groups? any[]  (lines kind) parallel to `lines`: the logical ITEM id each row belongs to, so a wrapped message reads as ONE item (set by `Handle:set`)
 ---@field items? table[]  (grid kind) neutral items `{ text, icon?, icon_hl? }`
 ---@field selected? integer  (grid kind) selected 1-based index
 ---@field columns? integer  (grid kind) column count
@@ -1707,8 +1708,8 @@ function M.focus(name, on_bar)
         buffer = surf_panel.buf,
         callback = function()
             if surf_panel and surf_panel.win and api.nvim_win_is_valid(surf_panel.win) then
-                local row = clamp_cursor() or api.nvim_win_get_cursor(surf_panel.win)[1]
-                active_row = row - 1
+                local cur_row = clamp_cursor() or api.nvim_win_get_cursor(surf_panel.win)[1]
+                active_row = cur_row - 1
                 if surf_panel.refresh then
                     surf_panel.refresh()
                 end
