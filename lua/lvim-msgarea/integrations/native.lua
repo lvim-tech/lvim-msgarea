@@ -133,6 +133,7 @@ local function refresh()
     for i, c in ipairs(cands) do
         bases[i] = c:match("[^/]*/?$") or c -- "~/foo/bar/baz.lua" → "baz.lua"; "dir/" → "dir/"; a command → itself
     end
+    -- the typed fragment is one literal word (a `!`, `^` or `$` in it is a character, not fzf syntax)
     fuzzy.filter(bases, fz, function(ranked)
         if mygen ~= gen or not in_cmd() then -- a newer keystroke superseded this, or the cmdline closed
             return
@@ -158,7 +159,7 @@ local function refresh()
         -- <Tab> still selects from here either way.
         sel = (fz == "") and 0 or 1
         m.set_completion(items, sel)
-    end)
+    end, { extended = false })
 end
 
 --- Move the selection by `delta` (clamped) and re-render just the selection (cheap path).
