@@ -67,7 +67,8 @@ end
 --- A per-item glyph for a PATH completion. blink's cmdline source tags EVERY item `Property` (so the
 --- kind icon is identical for files, dirs and commands alike); for a file/dir completion we instead pick
 --- the glyph from the item's real nature — a directory (trailing "/") gets blink's Folder glyph, a file
---- its lvim-icons glyph (by extension). Only the GLYPH is chosen; the colour stays the row accent.
+--- its lvim-icons icon (by name). A glyph takes the row accent; where file icons are images ("mix",
+--- "material") the IMAGE result is returned too, and the grid draws it in its own colours.
 --- Returns nil to fall back to the kind icon.
 ---@param label string
 ---@param kind_icons table<string, string>
@@ -78,12 +79,9 @@ local function path_icon(label, kind_icons)
         return f ~= "" and f or nil
     end
     local name = label:match("[^/]+$") or label
-    -- `font = true`: the row accent colours this glyph, and only a font glyph can take a colour (an lvim-icons
-    -- image's colour IS its image id)
-    local ic = iconlib.get(name, { provider = config.icon_provider, color_mode = config.icon_color_mode, font = true })
-        .glyph
-    if ic and ic ~= "" then
-        return ic
+    local res = iconlib.get(name, { provider = config.icon_provider, color_mode = config.icon_color_mode })
+    if res.glyph and res.glyph ~= "" then
+        return res.glyph, res.image and res or nil
     end
     local f = vim.trim(kind_icons.File or "")
     return f ~= "" and f or nil
@@ -137,12 +135,14 @@ local function to_neutral(items)
     for i, it in ipairs(items or {}) do
         local kind_name = (ok_t and kinds[it.kind]) or "Field"
         local text = it.label or it.insertText or ""
+        local picon, pres
+        if is_path then
+            picon, pres = path_icon(text, kind_icons)
+        end
         out[i] = {
             text = text,
-            icon = (is_path and path_icon(text, kind_icons))
-                or it.kind_icon
-                or kind_icons[kind_name]
-                or kind_icons.Field,
+            icon = picon or it.kind_icon or kind_icons[kind_name] or kind_icons.Field,
+            icon_res = pres, -- an image file icon (lvim-icons result), drawn by the grid in its own colours
             icon_hl = it.kind_hl or ("BlinkCmpKind" .. kind_name),
             match = matched[i],
         }

@@ -17,6 +17,7 @@
 local api = vim.api
 local status = require("lvim-hud.chrome.overlay")
 local merge = require("lvim-utils.utils").merge
+local iconlib = require("lvim-utils.icons")
 local uibar = require("lvim-ui.bar")
 
 --- Publish the completion match counter to the statusline — but ONLY when a transient action already owns
@@ -161,12 +162,20 @@ end
 --- 0-based char indices — SOURCE-AGNOSTIC: blink fills it from its fuzzy, other consumers however they like).
 ---@param it table?  a neutral item `{ text, icon?, icon_hl?, match? }`
 ---@param w integer
----@return string cell, { c0: integer, c1: integer }[]? match_spans
+--- The third value is the item's icon IMAGE (an lvim-icons result) and its byte span, when the icon is drawn
+--- as one: a file icon in "mix" / "material" (`it.icon_res`), a kind glyph in "material" (in its `icon_hl`
+--- colour). The caller paints it with the image's group, on the background the cell shows.
+---@return string cell, { c0: integer, c1: integer }[]? match_spans, { c0: integer, c1: integer, res: table }? image
 local function build_cell(it, w)
     if not it then
         return string.rep(" ", w), nil
     end
-    local icon = (it.icon and it.icon ~= "") and (it.icon .. " ") or ""
+    local ires = it.icon_res
+    if not ires and it.icon and it.icon ~= "" then
+        local r = iconlib.ui({ glyph = vim.trim(it.icon), hl = it.icon_hl })
+        ires = r.image and r or nil
+    end
+    local icon = ires and (ires.glyph .. " ") or ((it.icon and it.icon ~= "") and (it.icon .. " ") or "")
     local label = (it.text or ""):gsub("[\r\n]+", " ")
     -- Leading space + body, truncated so 1 trailing column is always free, then padded back to `w`.
     local content = " " .. trunc(icon .. label, math.max(1, w - 2))
@@ -193,7 +202,11 @@ local function build_cell(it, w)
             end
         end
     end
-    return cell, spans
+    local image = ires and { c0 = 1, c1 = 1 + #ires.glyph, res = ires } or nil
+    if image and image.c1 > #content then
+        image = nil -- truncated away
+    end
+    return cell, spans, image
 end
 
 -- ─── segment registry ──────────────────────────────────────────────────────────
@@ -291,10 +304,19 @@ local function render_grid(seg)
         for c = 1, C do
             local idx = (r - 1) * C + c
             local it = idx <= total and items[idx] or nil
-            local cell, mspans = build_cell(it, cell_w)
+            local cell, mspans, image = build_cell(it, cell_w)
             parts[c] = cell
             if it and idx == sel then
                 spans[#spans + 1] = { c0 = byte_col, c1 = byte_col + #cell, hl = sel_hl, priority = 200 }
+            end
+            if image then -- the icon image's id in the foreground, on the stripe / selection background
+                local bg = (it and idx == sel) and sel_hl or row_hl
+                spans[#spans + 1] = {
+                    c0 = byte_col + image.c0,
+                    c1 = byte_col + image.c1,
+                    hl = iconlib.on_bg(image.res, bg) or image.res.hl,
+                    priority = 300,
+                }
             end
             if mspans then -- the fuzzy-matched characters, above the row stripe AND the selection
                 for _, ms in ipairs(mspans) do
