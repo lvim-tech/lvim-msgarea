@@ -78,7 +78,10 @@ local function path_icon(label, kind_icons)
         return f ~= "" and f or nil
     end
     local name = label:match("[^/]+$") or label
-    local ic = iconlib.get(name, { provider = config.icon_provider, color_mode = config.icon_color_mode }).glyph
+    -- `font = true`: the row accent colours this glyph, and only a font glyph can take a colour (an lvim-icons
+    -- image's colour IS its image id)
+    local ic = iconlib.get(name, { provider = config.icon_provider, color_mode = config.icon_color_mode, font = true })
+        .glyph
     if ic and ic ~= "" then
         return ic
     end
